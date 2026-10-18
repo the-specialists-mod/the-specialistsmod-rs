@@ -1313,11 +1313,17 @@ impl Ctx {
         // 3. power-up with the bot in view
         cfg += &format!("ts_tp 1 0 -672 60 90 0\n{}ts_tp 2 0 -480 60 270 0\n{}", secs(0.5), secs(1.5));
         cfg += &status("picked up");
-        cfg += "+use\nwait;wait;wait\n-use\nwait;wait;wait\n+use\nwait;wait;wait\n-use\n";
-        cfg += &secs(1.5);
+        // Frame counts stretch in game time when the client runs below `fps_max 100` (Xvfb's
+        // software GL: about 45 fps native, 30-40 under Wine), issue #325. So the two presses are
+        // two frames apart, well inside the client's 0.3 s double-tap window (six frames were
+        // 0.3 s under Wine and the second press only re-armed it), and the status comes 0.5 s
+        // later, inside the 3 s power-up (at 1.5 s it had run out below about 55 fps). The rest
+        // of the old 4.5 s waits after the screenshot.
+        cfg += "+use\nwait\n-use\nwait\n+use\nwait\n-use\n";
+        cfg += &secs(0.5);
         cfg += &status("power-up used");
         cfg += &shot("slow motion");
-        cfg += &secs(3.0);
+        cfg += &secs(4.0);
 
         // 4. grenade; the host leaves before it goes off
         cfg += &format!("ts_give 24\n{}weapon_24\n{}", secs(0.5), secs(1.5));
