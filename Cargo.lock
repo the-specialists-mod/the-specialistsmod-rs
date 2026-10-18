@@ -628,9 +628,11 @@ version = "3.0.8"
 dependencies = [
  "font8x8",
  "goldsrc",
+ "plugin-pkg",
  "semver",
  "serde",
  "shared",
+ "tempfile",
  "toml",
  "ts-client-ext-api",
  "ts-gameplay",

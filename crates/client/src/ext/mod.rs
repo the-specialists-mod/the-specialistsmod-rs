@@ -63,7 +63,7 @@ pub trait ExtHooks {
 
 /// Opens one approved library as extension `id` (the FFI in `ts-client-dll`): its callbacks and
 /// a description for the console, or why it didn't load.
-pub type Open<'a> = &'a dyn Fn(&Candidate, ExtId) -> Result<(Rc<dyn ExtHooks>, String), String>;
+pub type Open = &'static dyn Fn(&Candidate, ExtId) -> Result<(Rc<dyn ExtHooks>, String), String>;
 
 struct Entry {
     id: ExtId,
@@ -100,6 +100,11 @@ struct State {
     server: Option<String>,
     cursor: bool,
     visible: Option<(u64, Vec<VisiblePlayer>)>,
+    /// What [`load_all`] opened libraries with, for the plugins approved for one server only
+    /// (loaded on connecting there, client-plugins.md §9).
+    open: Option<Open>,
+    /// The gate has candidates for some server ([`ApprovalGate::waits_for_server`]).
+    server_wait: bool,
 }
 
 static STATE: Global<RefCell<Option<State>>> = Global(RefCell::new(None));
@@ -174,6 +179,11 @@ pub fn load_all(open: Open) {
     for c in candidates {
         load_one(&c, open);
     }
+    let wait = with_gate(|g| g.waits_for_server());
+    with(|s| {
+        s.open = Some(open);
+        s.server_wait = wait;
+    });
 }
 
 /// Asks the gate about one candidate and loads it if approved: also the entry point for a plugin
@@ -279,7 +289,7 @@ pub fn vid_init() {
 /// The end of `HUD_Frame`: the server check, then `frame`, then the cursor question.
 pub fn frame(time: f64) {
     with(|s| s.frame += 1);
-    if with(|s| s.exts.is_empty()) {
+    if with(|s| s.exts.is_empty() && !s.server_wait) {
         return;
     }
     let server = engine().server_address();
@@ -297,7 +307,16 @@ pub fn frame(time: f64) {
 /// its connection, client-plugins.md §13.3), then every extension hears of it.
 fn server_changed(server: Option<String>) {
     let address = CString::new(server.clone().unwrap_or_default()).unwrap_or_default();
-    with(|s| s.server = server);
+    with(|s| s.server = server.clone());
+    // Plugins approved for this server only load now, and stay loaded (§9); they hear of the
+    // server below like the others.
+    if let Some(open) = with(|s| s.open) {
+        for c in with_gate(|g| g.server_changed(server.as_deref())) {
+            load_one(&c, open);
+        }
+        let wait = with_gate(|g| g.waits_for_server());
+        with(|s| s.server_wait = wait);
+    }
     resume_all();
     for h in active() {
         h.server_changed(&address);

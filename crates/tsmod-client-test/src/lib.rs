@@ -11,7 +11,11 @@
 //! `report.txt` in its data directory, which xtask reads (the engine log can sit in a buffer
 //! under Wine). `tsext_test_spawn` starts the helper (`tsmod_test_helper`, listed in
 //! `cl_dlls/tsmod_test.files`) through `verified_spawn`, which writes `spawned.txt` there, and
-//! checks that an unlisted file is refused.
+//! checks that a file outside the approval is refused.
+//!
+//! Under any name starting with `quiet` it is a minimal extension for the approval tests (issue
+//! #297): it loads, prints `quiet stub init` from `init`, and, installed as a package with a
+//! helper, starts that helper through `verified_spawn`.
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -88,6 +92,8 @@ struct State {
     while_suspended: u32,
     key_down: bool,
     key_up: bool,
+    /// The library's path (quiet stubs).
+    path: String,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -180,6 +186,16 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
         }
         "test_refuse" => return INVALID,
         "test" => {}
+        quiet if quiet.starts_with("quiet") => {
+            // SAFETY: `path` is a NUL-terminated string valid for the call.
+            let path = unsafe { CStr::from_ptr(info.path) }.to_string_lossy().into_owned();
+            with(|s| {
+                s.id = info.id;
+                s.path = path;
+            });
+            *out = ClientExt { name: c"quiet client stub".as_ptr(), version: c"1".as_ptr(), init: Some(quiet_init), ..ClientExt::EMPTY };
+            return OK;
+        }
         other => {
             with(|s| s.id = info.id);
             print(&format!("FAIL: loaded as {other}, which the approval gate must never let load"));
@@ -208,6 +224,30 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
         ..ClientExt::EMPTY
     };
     OK
+}
+
+/// A quiet stub's `init`: says it ran (late, for a plugin approved for one server only). A
+/// package's copy (`files/lib/<platform>/tsmod_<id>`) also starts `files/bin/<helper>` through
+/// `verified_spawn` when the package has one, and tries a file outside its approval.
+extern "C" fn quiet_init() {
+    print("quiet stub init");
+    let path = with(|s| s.path.clone());
+    let Some(files) = std::path::Path::new(&path).parent().and_then(|p| p.parent()).and_then(|p| p.parent()) else { return };
+    let helper = files.join("bin").join(helper_name());
+    if !helper.is_file() {
+        return;
+    }
+    let a = api();
+    let helper = CString::new(helper.to_string_lossy().into_owned()).unwrap_or_default();
+    let outside = c"liblist.gam";
+    let arg = c"from-quiet";
+    let argv = [arg.as_ptr()];
+    // SAFETY: table functions, called with this extension's id, NUL-terminated paths and an
+    // argument array of the length given.
+    let (refused, started) = unsafe {
+        ((a.verified_spawn)(id(), outside.as_ptr(), 0, std::ptr::null()), (a.verified_spawn)(id(), helper.as_ptr(), 1, argv.as_ptr()))
+    };
+    print(&format!("quiet spawn refused {} started {}", refused == REFUSED, started > 0));
 }
 
 /// Counts a callback that came while suspended.
@@ -368,7 +408,8 @@ extern "C" fn shutdown() {}
 extern "C" fn cmd_spawn() {
     let a = api();
     let me = id();
-    let refused_path = CString::new("cl_dlls/tsmod_test.files").unwrap_or_default();
+    // A file outside the approval (the game's own liblist.gam).
+    let refused_path = CString::new("liblist.gam").unwrap_or_default();
     let helper = CString::new(format!("cl_dlls/{}", helper_name())).unwrap_or_default();
     let arg = c"from-tsmod_test";
     let argv = [arg.as_ptr()];

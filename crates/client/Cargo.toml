@@ -19,11 +19,14 @@ font8x8 = { version = "0.3", default-features = false }
 semver = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+# Client plugin packages, the approval store and verification (crates/plugin-pkg, issue #297).
+plugin-pkg = { path = "../plugin-pkg" }
 
 # Tests only: the core's tests run the 3.0 plugin's movement and gun rules (its fixture's `pm`
 # and `gun`). The library never links a ruleset (docs/implementation/gameplay-plugins.md).
 [dev-dependencies]
 ts30-gameplay = { path = "../ts30" }
+tempfile = "3"
 
 [features]
 # The relaunch e2e test's hooks (`cargo xtask relaunch`, src/relaunch/e2e.rs): card answers and a

@@ -35,7 +35,9 @@ pub unsafe extern "C" fn Initialize(funcs: *mut cl_enginefunc_t, version: c_int)
     unsafe { cl::init(funcs) };
     goldsrc::panic::install("ts_client_panic.log", |m| engine().print(m));
     register_gameplay();
-    // Port addition (issue #293): the approved client extensions, before `HUD_Init`.
+    // Port additions (issues #293, #297): verify the client plugins and ask about new or changed
+    // ones, install the approval gate, then load what it approves, before `HUD_Init`.
+    ts_client::plugins::install();
     ext::load_all();
     1
 }
@@ -61,6 +63,7 @@ pub unsafe extern "C" fn HUD_Init() {
     spectator::init();
     ts_client::relaunch::init();
     engine().print("[ts] client: Rust TS client library initialized\n");
+    ts_client::plugins::init();
     ts_client::ext::init();
 }
 

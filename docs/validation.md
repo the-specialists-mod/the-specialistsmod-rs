@@ -225,12 +225,20 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 `cargo xtask plugins [roots...]`: a dedicated server per root with the stub plugin `tsmod_test`
 and the loader's fixtures; see implementation/bot-plugins.md §6 for what it checks.
 
-`cargo xtask client-plugins [fwgs fwgs-win ...]` (issue #293, dev profile only): a listen server
-per FWGS root with the stub client extension `tsmod_test` in `cl_dlls/`, the loader's fixtures and
-the development approval override; see implementation/client-ext-api.md §9 for what it checks.
-Like every client check it needs a display: from a session without one, start an Xvfb and run
-xtask with `DISPLAY` set to it, `SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset (§4). It passed
-on `fwgs` (36 s) and `fwgs-win` (68 s) on 2026-10-18.
+`cargo xtask client-plugins [fwgs fwgs-win ...]` (issues #293, #297, dev profile only): a listen
+server per FWGS root with the stub client extension `tsmod_test` in `cl_dlls/`, the loader's
+fixtures, approval packages in `cl_plugins/` and a fresh `approved.toml` written with
+`plugin-approve` (the root's own store is set aside and put back); see
+implementation/client-ext-api.md §9 and client-plugins.md §11 for what it checks. Like every
+client check it needs a display: from a session without one, start an Xvfb and run xtask with
+`DISPLAY` set to it, `SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset (§4). It passed on `fwgs`
+(60 s) and `fwgs-win` (108 s) on 2026-10-18.
+
+The start-up box itself is answered by the debug-only hook in those runs. The real
+`SDL_ShowMessageBox` was checked by hand on `fwgs` under Xvfb on 2026-10-18 (no hook, one new
+library): the box showed its text and "Allow", "Not now", "Never" over the windowed game. That
+SDL2 also started a zenity box behind it; the game waits in `Initialize` until it's answered, and
+ignores SIGTERM meanwhile (`pkill -9 -x xash3d` ends it).
 
 ### 2.y TS 2.1 mode (`cargo xtask ts21`)
 

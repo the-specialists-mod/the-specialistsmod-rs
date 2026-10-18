@@ -1,17 +1,20 @@
 # Client plugins: packages, downloads and approval
 
-Status: draft specification, 2026-10-17. Built so far: the pure parts (§3, §5, §10: packages,
-manifests, signatures, the store and verification) in `crates/plugin-pkg` (issue #296); the
-client extension API and its loader with the approval-gate seam ([client-ext-api.md](client-ext-api.md),
-issue #293); the port client's version check (§13.1, issue #300); and the port side of restart and
-reconnect (§13.5, issue #301; the launcher side is tsmod-launcher #4 and #5). The server's offers (§6.1, §6.2, §6.5, §12, op 5 of §13.1;
-`ts_server::plugin_offers`, `shared::protocol::tspkg`) are built (issue #298); the client only
-prints what it receives. The loader's use of the store, the client's offer flow and the cards
+Status: specification, 2026-10-17; partly built. Built so far: the pure parts (§3, §5, §10:
+packages, manifests, signatures, the store and verification) in `crates/plugin-pkg` (issue #296);
+the client extension API and its loader ([client-ext-api.md](client-ext-api.md), issue #293);
+milestone 2 (issue #297): verification at every start, the start-up prompt, hand-installed
+libraries, `[requires] port`, `scope = "server"` loading, the `cl_plugins*` cvars,
+`cl_plugins_list`, `cl_plugins_verify` and `cargo xtask plugin-approve`, in
+`crates/client/src/plugins/` (§16 lists what that build decided); the server's offers (§6.1, §6.2,
+§6.5, §12, op 5 of §13.1; `ts_server::plugin_offers`, `shared::protocol::tspkg`, issue #298), with
+the client only printing what it receives; the port client's version check (§13.1, issue #300);
+and the port side of restart and reconnect (§13.5, issue #301; the launcher side is
+tsmod-launcher #4 and #5). The client's offer flow and cards (#299) and `cl_plugins_menu` (#311)
 aren't built yet.
 
-The client library has no plugin loading today. The server loads `tsmod_*` libraries from
-`dlls/` ([plugin-api.md](plugin-api.md) §1.2), but nothing equivalent exists on the client. This
-document adds two things:
+The server loads `tsmod_*` libraries from `dlls/` ([plugin-api.md](plugin-api.md) §1.2); this
+document gives the client the same, with the player's approval. It adds two things:
 
 * **Client plugins:** native libraries that `client.dll` loads through the client extension API.
   That API is [client-ext-api.md](client-ext-api.md) (first specified in
@@ -292,6 +295,8 @@ At `Initialize`, before any plugin is mapped:
 * **Executables started later:** a plugin that starts a helper process does it through the
   extension API's `verified_spawn(path, args)`. That call re-hashes the file against the
   approval immediately before starting it, and refuses if the file has changed or isn't listed.
+  Listed means in the plugin's approval: any of its files (for a hand-installed library, the
+  files its `.files` list names, and the list itself).
   The webview plugin's `tsmod-webview-host` and CEF's subprocesses (the same executable) start
   this way. Libraries the helper loads itself (`libcef`) were hashed at start; re-checking them
   is open question 5.
@@ -499,6 +504,25 @@ lookup, as the port already does for mouse and joystick calls). Both HL25 and FW
 * **Launcher:** when the game starts from tsmod-launcher, the launcher runs the same check
   first (`tsmod-launcher` reads the same store and manifests) and shows a richer dialog with the
   full file list. Once it has approved, the in-game box doesn't appear.
+* **Built (#297):** `ts_client::plugins` (`startup.rs` decides, `prompt.rs` asks). A box with no
+  "Allow" is shown for a plugin that can't be approved as installed (§5.2 step 5); its "Never"
+  still blocks. Plugins this client can't load whatever the player says (an unmet `[requires]
+  port`, another `client_ext_api`, a library for another platform or architecture) are skipped
+  with the reason and get no box. An "Allow" keeps an earlier approval's scope, so a rebuilt
+  "this server only" plugin stays so, and records that approval's source (else `manual`).
+  Without SDL2's message box the answer is "Not now", with a console line saying to approve in
+  tsmod-launcher.
+* **Clicks only, as far as a native box allows** (§7.3): Enter and Escape press "Not now", and an
+  "Allow" within 2 seconds of the box appearing doesn't count: the box comes back with a line
+  saying so. A message box can't disable a button or ignore the keyboard, so where the dialog
+  lets Tab reach "Allow" (Windows, zenity) Space can press it. No server is connected at start,
+  so that's an accidental-press risk only. Validation on fullscreen, Wine and HL25 is #312.
+* **Test hook:** in a **debug build only**, `TSRS_DEV_PLUGIN_PROMPT=<id>=<answer>,...,*=<answer>`
+  (`allow`, `later`, `later_all`, `never`) answers the boxes without showing them, and
+  `TSRS_DEV_PLUGIN_PROMPT_LOG=<file>` (relative to the game directory) records each box's title,
+  buttons, text and answer. An "Allow" for a box without that button answers "Not now". A release
+  build ignores both and says so on the console. Environment only: no console command or server
+  can reach it.
 
 ### 7.2 Server offer and update cards
 
@@ -563,6 +587,13 @@ stuffed `tsrs_reconnect` does no more than a stuffed `connect`, and a stuffed `t
 no more than a stuffed `quit` followed by a reconnect to the same server (a port update still
 goes through the launcher's question).
 
+* **Built (#297):** the four cvars (`FCVAR_ARCHIVE`, registered at `HUD_Init`), `cl_plugins_list`
+  and `cl_plugins_verify`. The engines execute `config.cfg` only after `Initialize`, so start-up
+  reads `cl_plugins` and `cl_plugins_verify_log` from the `config.cfg` line the engine archived
+  (the last one wins; a value is on when it's a number other than 0, as `atof` sees it); a change
+  takes effect at the next start. `cl_plugins_download` and `cl_plugins_allow_unsigned` are for the
+  offers (#299). `cl_plugins_menu` is #311 and `tsrs_reconnect` #301.
+
 ## 9. Loading
 
 * **Approved at start:** loaded at `Initialize` through the client extension API, as specified
@@ -573,7 +604,8 @@ goes through the launcher's question).
 * **`scope = "server"`:** loaded on connecting to a listed address. After that it stays loaded
   until the game exits, even on other servers, because unloading native code isn't safe. The
   card says so. The extension gets a `server_changed(address)` callback, and the webview plugin
-  closes its server surface on it.
+  closes its server surface on it. Built (#297): the files are hashed again just before it's
+  mapped, and the address is the net API's (`loopback` for a listen server).
 * **Update while loaded:** the new version is installed and approved, but loads at the next
   start. The card says "restart to finish".
 * **Revoked while loaded:** stays loaded until exit.
@@ -598,7 +630,11 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
 
 * **Developers:** `cargo xtask plugin-approve <dir|tspkg>` writes a store entry for a local build
   on the developer's own machine. That's the same choice a player makes in a dialog, made at the
-  terminal. The e2e roots use it, so runs don't stop at a prompt.
+  terminal. The e2e roots use it, so runs don't stop at a prompt. Built (#297,
+  `xtask/src/plugin_approve.rs`): `plugin-approve <tspkg | cl_plugins/<id>/<version> |
+  cl_dlls/tsmod_<name><suffix>>... [--root R | --game-dir D] [--platform P]`. A `.tspkg` is
+  installed first (needs `--root` or `--game-dir`), and what the client couldn't approve as it is
+  is refused here too.
 * **Unit tests (`plugin-pkg`):**
   * manifest and path rules (`..`, absolute paths, drive letters, symlinks, duplicate paths);
   * a zip with an extra or missing file;
@@ -623,7 +659,14 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
 * **e2e (`cargo xtask e2e`, FWGS root with a dedicated server):**
   1. Approve a stub plugin with `plugin-approve`, start, and check it loads. Change one byte, add
      an extra file, delete a file; each must stop it loading, and the log must name the change.
-     The prompt is answered by a test-only SDL stub that records what it was shown.
+     The prompt is answered by a test-only hook that records what it was shown.
+     **Built (#297) in `cargo xtask client-plugins`** (FWGS listen server, `fwgs` and
+     `fwgs-win`), not a separate `e2e` command: one start covers it, with an approved package that
+     loads and starts its helper through `verified_spawn`, three approved packages tampered with
+     afterwards (each refused, named, and asked about with no "Allow"), an unmet `[requires]
+     port` (skipped, no box), a `scope = "server"` approval for the listen server (waits at start,
+     loads on connecting), and new hand-installed libraries answered "Allow", "Never" and "Not
+     now" by the §7.1 hook (the store checked afterwards).
   2. Serve a signed stub package from the root's FastDL and offer it. The test answers the card
      through a test-only hook, which is compiled only into `--features e2e` builds and is never a
      console command. Check the reply sequence `offered`, `downloading`, `loaded`, the installed
@@ -1125,7 +1168,8 @@ open question 3.
    can't show a card before downloading.
 3. Does `SDL_ShowMessageBox` show correctly over a fullscreen window at `Initialize`, on both
    engines and on Wine? If not, the start-up prompt waits for the first frame and uses the VGUI
-   card, and plugins awaiting approval load late (§9).
+   card, and plugins awaiting approval load late (§9). Shown correctly over windowed FWGS Linux
+   under Xvfb (2026-10-18); the rest is #312.
 4. The countersigning key: who holds it, and how a publisher asks for verification. Probably a
    release-repo workflow in the-specialists-mod.
 5. Libraries a helper process loads on its own (`libcef.so`, `libcef.dll`) are hashed at start,
@@ -1160,3 +1204,19 @@ open question 3.
      quit-and-inform card and `.reconnect`, and the relaunch e2e (§11 e2e 6) on every root.
    * plugins: `match`, `[[block]]` and `[policy]`, `tspkg list`, ops 3 and 4, suspend and
      resume, restart and reconnect, and the plugin API events.
+
+## 16. Decisions made building milestone 2 (#297)
+
+Where this specification was silent or ambiguous, the loader (`crates/client/src/plugins/`)
+chose, and the sections above now say so. In short (issue #313):
+
+* **`cl_plugins` at `Initialize`:** read from `config.cfg` (§8), since the engine runs it later.
+* **What gets a box:** new and changed plugins, and those that can't be approved as installed
+  (without "Allow"). Plugins this client can't load anyway (`[requires] port`, `client_ext_api`,
+  a library for another platform) are skipped with the reason and no box (§3.2, §7.1).
+* **"Not now for all"** appears when more than three boxes are to be shown.
+* **An "Allow" at start** keeps the earlier approval's scope and source (§7.1).
+* **Clicks only** is as far as a native box allows (§7.1, #312).
+* **The prompt hook** is an environment variable in debug builds, not an SDL stub (§7.1, §11).
+* **`verified_spawn`'s "listed"** is any approved file of the plugin (§5.2).
+* **e2e 1** runs in `cargo xtask client-plugins` on a listen server (§11).

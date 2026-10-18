@@ -32,6 +32,10 @@
 //!                                                 must skip) and the stub's bot backend on a
 //!                                                 dedicated server, every root in parallel
 //!                                                 (also run by play)
+//! cargo xtask plugin-approve <tspkg|package dir|cl_dlls/tsmod_<name><suffix>>... [--root R | --game-dir D] [--platform P]
+//!                                                 approve a local client plugin build in the
+//!                                                 game's cl_plugins/approved.toml, as the start-up
+//!                                                 box's "Allow" would (plugin_approve.rs)
 //! cargo xtask ts21    [--release] [--no-clients] [<root>...]
 //!                                                 TS 2.1 mode on a dedicated server per root, by
 //!                                                 rcon: reloads, LMS, The One, teamplay, round
@@ -83,6 +87,7 @@ mod a2s;
 mod client_plugins;
 mod lint;
 mod package;
+mod plugin_approve;
 mod plugins;
 mod relaunch;
 mod roots;
@@ -162,6 +167,11 @@ fn main() {
         }
         "client-plugins" => {
             if !ctx.client_plugins_all(&play_roots(&args)) {
+                exit(1);
+            }
+        }
+        "plugin-approve" => {
+            if !plugin_approve::main(args) {
                 exit(1);
             }
         }
@@ -251,7 +261,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|ts21|version|relaunch|tspkg|plugin-offer|all|client|steam|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|plugin-approve|ts21|version|relaunch|tspkg|plugin-offer|all|client|steam|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
@@ -521,6 +531,7 @@ impl Ctx {
         // A `plugins` run cut short may have left its stub and fixtures: other runs go without.
         plugins::remove_fixtures(&gamedir.join("dlls"));
         client_plugins::remove_fixtures(&gamedir.join("cl_dlls"));
+        client_plugins::remove_plugin_fixtures(&gamedir);
         say!("== {}: installed into {}", root.name, gamedir.display());
     }
 

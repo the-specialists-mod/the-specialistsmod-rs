@@ -80,7 +80,9 @@ crates/
                  libraries it loads once the approval gate allows (implementation/client-ext-api.md)
   tsmod-client-test/ the stub client extension `tsmod_test` and its helper process (a test
                  fixture for `cargo xtask client-plugins`)
-  client/        ts-client: client game logic (rlib, no unsafe)
+  client/        ts-client: client game logic (rlib, no unsafe); `plugins` verifies the client
+                 plugins at start, asks about new or changed ones and is the extension loader's
+                 approval gate (implementation/client-plugins.md §5, §7.1)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll; also loads
                  the client extensions (ext.rs; the logic is ts-client's `ext`)
 xtask/           build, dist, install, server tests

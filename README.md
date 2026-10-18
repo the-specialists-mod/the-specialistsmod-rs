@@ -155,7 +155,7 @@ Setting up the roots (steamcmd, ReHLDS, Wine) and the latest results: [docs/vali
 | [docs/implementation/plugin-api.md](docs/implementation/plugin-api.md) | The server plugin API (`CreateInterface`, for AMX Mod X's TS module) and the private-data guard |
 | [docs/implementation/gameplay-plugins.md](docs/implementation/gameplay-plugins.md) | Gameplay rulesets as in-process plugins (`ts_gameplay`): the hooks, choosing the ruleset at a map start (a change reloads the map), the client check, adding a hook or a ruleset |
 | [docs/implementation/ts21.md](docs/implementation/ts21.md) | The TS 2.1 gameplay plugin (`crates/ts21`, issue #100) |
-| [docs/implementation/client-plugins.md](docs/implementation/client-plugins.md) | Draft spec, not built: client plugins, server-offered packages, and the player's approval with per-file hashes |
+| [docs/implementation/client-plugins.md](docs/implementation/client-plugins.md) | Client plugins, server-offered packages, and the player's approval with per-file hashes (built: packages, the store, start-up verification and prompt; not yet: server offers) |
 
 ## Origin
 
