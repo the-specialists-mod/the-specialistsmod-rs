@@ -94,6 +94,8 @@ fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sy
         entity_key,
         attach_plugin,
         detach_plugin,
+        ext_message,
+        client_port_version,
     }
 }
 
@@ -563,4 +565,28 @@ unsafe extern "C" fn attach_plugin(name: *const c_char) -> PluginId {
 
 extern "C" fn detach_plugin(plugin: PluginId) -> c_int {
     if ts_server::plugins::detach_plugin(plugin) { OK } else { INVALID }
+}
+
+// ---- version 8: client extensions, the port client's version --------------------------------------
+
+unsafe extern "C" fn ext_message(player: c_int, channel: *const c_char, data: *const u8, len: c_int, flags: c_int) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let Some(channel) = (unsafe { arg(channel) }) else { return INVALID };
+    let payload: &[u8] = match (data.is_null(), len) {
+        (_, 0) => &[],
+        (false, n) if n > 0 => {
+            // SAFETY: the table's contract: a non-NULL `data` is readable for `len` bytes.
+            unsafe { std::slice::from_raw_parts(data, n as usize) }
+        }
+        _ => return INVALID,
+    };
+    api::ext::ext_message(player, channel.to_bytes(), payload, flags)
+}
+
+unsafe extern "C" fn client_port_version(player: c_int, buf: *mut c_char, len: c_int) -> c_int {
+    match api::ext::client_port_version(player) {
+        // SAFETY: the table's contract for the buffer.
+        Ok(v) => unsafe { put_str(buf, len, &v) },
+        Err(code) => code,
+    }
 }

@@ -225,10 +225,13 @@ and the loader's fixtures; see implementation/bot-plugins.md §6 for what it che
 
 `cargo xtask client-plugins [fwgs fwgs-win ...]` (issue #293, dev profile only): a listen server
 per FWGS root with the stub client extension `tsmod_test` in `cl_dlls/`, the loader's fixtures and
-the development approval override; see implementation/client-ext-api.md §9 for what it checks.
+the development approval override, and (minor 1, #294/#295) the server stub plugin in `dlls/` for
+`TSExt` both ways; see implementation/client-ext-api.md §9 for what it checks. The `TSExt` and
+interception checks read `[ts ext]` lines (`ts_dev_extlog`) from the engine log after the game
+exits, so they hold under Wine's buffered log too.
 Like every client check it needs a display: from a session without one, start an Xvfb and run
 xtask with `DISPLAY` set to it, `SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset (§4). It passed
-on `fwgs` (36 s) and `fwgs-win` (68 s) on 2026-10-18.
+on `fwgs` (36 s) and `fwgs-win` (79 s) on 2026-10-18, with minor 1's checks.
 
 ### 2.y TS 2.1 mode (`cargo xtask ts21`)
 

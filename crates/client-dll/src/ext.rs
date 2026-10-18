@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 use ts_client::ext::gate::Candidate;
 use ts_client::ext::{self as ext, ExtHooks, view};
 use ts_client_ext_api::{
-    AimInfo, ClientExt, ClientExtApi, CommandFn, ExtId, GameEvent, INVALID, LOAD_SYMBOL, LoadFn, LoadInfo, LocalState, MINOR, OK,
-    PlayerScore, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, renderer,
+    AimInfo, COMMAND_MAX, ClientExt, ClientExtApi, CommandFn, CommandPre, ExtId, GameEvent, INVALID, LOAD_SYMBOL, LoadFn, LoadInfo,
+    LocalState, MESSAGE_MAX, MINOR, MessagePre, OK, PlayerScore, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, renderer, verdict,
 };
 
 /// `Initialize`: the approved extensions (`ts_client::ext::load_all`).
@@ -133,6 +133,70 @@ impl ExtHooks for Loaded {
             f();
         }
     }
+    fn user_message(&self, channel: &CStr, data: &[u8]) {
+        if let Some(f) = self.desc.user_message {
+            // SAFETY: `channel` is NUL-terminated and `data` is `len` readable bytes, both living
+            // for the call.
+            unsafe { f(channel.as_ptr(), data.as_ptr(), data.len() as c_int) };
+        }
+    }
+    fn message_pre(&self, msg: &ext::MsgCall) -> ext::Verdict {
+        let Some(f) = self.desc.message_pre else { return ext::Verdict::Pass };
+        let call = MessagePre {
+            name: msg.name.as_ptr(),
+            data: msg.data.as_ptr(),
+            len: msg.data.len() as c_int,
+            allow: msg.allow,
+            token: msg.token,
+        };
+        let mut out = [0u8; MESSAGE_MAX];
+        let mut out_len: c_int = -1;
+        // SAFETY: `call` and what it points at live for the call; `out` has room for
+        // `MESSAGE_MAX` bytes and `out_len` is writable, as the descriptor's contract says.
+        let rc = unsafe { f(&call, out.as_mut_ptr(), &mut out_len) };
+        match rc {
+            verdict::BLOCK => ext::Verdict::Block,
+            verdict::DEFER => ext::Verdict::Defer,
+            // A length outside the buffer is no replacement: it counts as a block.
+            verdict::REPLACE => match usize::try_from(out_len).ok().filter(|&n| n <= MESSAGE_MAX) {
+                Some(n) => ext::Verdict::Replace(out[..n].to_vec()),
+                None => ext::Verdict::Block,
+            },
+            _ => ext::Verdict::Pass,
+        }
+    }
+    fn command_pre(&self, cmd: &ext::CmdCall) -> ext::Verdict {
+        let Some(f) = self.desc.command_pre else { return ext::Verdict::Pass };
+        let argv: Vec<*const c_char> = cmd.argv.iter().map(|a| a.as_ptr()).collect();
+        let call = CommandPre { line: cmd.line.as_ptr(), argc: argv.len() as c_int, argv: argv.as_ptr(), allow: cmd.allow };
+        // SAFETY: `call` and the strings it points at live for the call.
+        match unsafe { f(&call) } {
+            verdict::BLOCK => ext::Verdict::Block,
+            // Not client commands' verdicts: the port warns and passes.
+            verdict::REPLACE => ext::Verdict::Replace(Vec::new()),
+            verdict::DEFER => ext::Verdict::Defer,
+            _ => ext::Verdict::Pass,
+        }
+    }
+    fn server_cmd_pre(&self, cmd: &ext::CmdCall) -> ext::Verdict {
+        let Some(f) = self.desc.server_cmd_pre else { return ext::Verdict::Pass };
+        let argv: Vec<*const c_char> = cmd.argv.iter().map(|a| a.as_ptr()).collect();
+        let call = CommandPre { line: cmd.line.as_ptr(), argc: argv.len() as c_int, argv: argv.as_ptr(), allow: cmd.allow };
+        let mut out = [0 as c_char; COMMAND_MAX];
+        // SAFETY: `call` and the strings it points at live for the call; `out` has room for
+        // `COMMAND_MAX` bytes, as passed.
+        let rc = unsafe { f(&call, out.as_mut_ptr(), COMMAND_MAX as c_int) };
+        match rc {
+            verdict::BLOCK => ext::Verdict::Block,
+            verdict::DEFER => ext::Verdict::Defer,
+            verdict::REPLACE => {
+                // Unterminated counts as too long (the port refuses it, so it blocks).
+                let n = out.iter().position(|&c| c == 0).unwrap_or(COMMAND_MAX);
+                ext::Verdict::Replace(out[..n].iter().map(|&c| c as u8).collect())
+            }
+            _ => ext::Verdict::Pass,
+        }
+    }
 }
 
 // ---- the table ----------------------------------------------------------------------------------
@@ -185,6 +249,8 @@ fn build() -> ClientExtApi {
         world_to_screen,
         weapon_name,
         max_clients,
+        claim_channel: Some(claim_channel),
+        release: Some(release),
         reserved: [None; ts_client_ext_api::API_RESERVED],
     }
 }
@@ -451,4 +517,27 @@ unsafe extern "C" fn weapon_name(id: c_int, buf: *mut c_char, len: c_int) -> c_i
 
 extern "C" fn max_clients() -> c_int {
     engine().max_clients()
+}
+
+// ---- minor 1 ------------------------------------------------------------------------------------
+
+unsafe extern "C" fn claim_channel(id: ExtId, name: *const c_char) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    match unsafe { arg(name) } {
+        Some(n) => ext::host_claim_channel(id, n.to_bytes()),
+        None => INVALID,
+    }
+}
+
+unsafe extern "C" fn release(id: ExtId, token: u32, verdict: c_int, data: *const u8, len: c_int) -> c_int {
+    let data = match (data.is_null(), len) {
+        (_, 0) => Some(&[][..]),
+        (false, n) if n > 0 => {
+            // SAFETY: the table's contract: a non-NULL `data` is readable for `len` bytes.
+            Some(unsafe { std::slice::from_raw_parts(data, n as usize) })
+        }
+        (true, _) => None,
+        _ => return INVALID,
+    };
+    ext::host_release(id, token, verdict, data)
 }

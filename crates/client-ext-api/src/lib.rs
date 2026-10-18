@@ -28,8 +28,35 @@
 //!   version gives reserved slots a type and a meaning; nothing else moves. An extension reads
 //!   [`ClientExtApi::minor`] before calling a function added after minor 0 (an older client leaves
 //!   it NULL), and may fill callbacks a newer minor defines: an older client never calls them.
-//!   The planned additions are the `TSExt` channel messages (issue #294) and the interception
-//!   hooks `message_pre`, `command_pre`, `server_cmd_pre` (issue #295).
+//!   Minor 1 added the `TSExt` channel messages (issue #294) and the interception hooks
+//!   `message_pre`, `command_pre`, `server_cmd_pre` with [`ClientExtApi::release`] (issue #295).
+//!
+//! # Interception (minor 1)
+//! * **What reaches the hooks:** `message_pre` gets every user message of TS 3.0's the port hooks
+//!   but `SrvSett` (none of the port's own, `TSExt` among them); `command_pre` every client command
+//!   the port registered; and
+//!   `server_cmd_pre` every command the port's own code sends to the server (weapon selection,
+//!   menu answers, buying, ...). Server `stufftext` (`svc_stufftext`) is the engine's: no client
+//!   library sees it, so no hook does.
+//! * **What a verdict can do** is in each call's `allow` ([`allow`] bits). Messages that keep the
+//!   HUD and prediction in step with the server, effects meant to hinder the player (fades,
+//!   shakes, blur, damage, slow motion), input buttons (`+attack`, `+use`, every `+`/`-`
+//!   command), extensions' own commands, the dev aids, and the commands and replies of the plugin
+//!   approval path (`cl_plugins*`, `tsrs_*`, `tspkg`, client-plugins.md §7.3) are observe-only:
+//!   `allow` is 0 and the verdict is ignored.
+//! * **Order:** extensions in load order. Each sees the payload as the ones before it rewrote it;
+//!   the first block ends the run (later extensions don't see it). A [`verdict::DEFER`] pauses the
+//!   run at that extension until it calls [`ClientExtApi::release`] (or [`HOLD_MS`] pass: then it
+//!   passes); the run then goes on with the next extension.
+//! * **State and display:** the port applies a message's state at once, whatever the verdict,
+//!   and blocks, rewrites or holds only its display: a blocked or held `DeathMsg` still marks the
+//!   victim dead on the scoreboard and still raises [`event::DEATH`]. Messages of one kind are
+//!   displayed in arrival order: one held holds back the later ones of its kind (at most
+//!   [`HOLD_QUEUE`]; past that the oldest passes).
+//! * **Replacements** must decode as the message and keep who it names (a `SayText`'s sender, a
+//!   `DeathMsg`'s killer and victim, a `TSPAward`'s player); otherwise they count as a block,
+//!   with a console warning.
+//! * **Suspension** ends an extension's holds (they pass) and skips it in every run.
 //!
 //! # Rules
 //! * The port calls the extension only on the engine's thread, from inside a client export, and
@@ -51,15 +78,18 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 /// [`ClientExtApi::version`] of this definition (and what [`ClientExt::api_version`] must be).
 pub const VERSION: u32 = 1;
 /// [`ClientExtApi::minor`]: the compatible additions this definition has (see the crate docs).
-pub const MINOR: u32 = 0;
+/// 1: `TSExt` channels ([`ClientExtApi::claim_channel`], [`ClientExt::user_message`]) and the
+/// interception hooks ([`ClientExt::message_pre`], [`ClientExt::command_pre`],
+/// [`ClientExt::server_cmd_pre`], [`ClientExtApi::release`]).
+pub const MINOR: u32 = 1;
 /// The entry point every client extension exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_ClientExtLoad";
 /// The prefix of the libraries the client loads from `cl_dlls/`.
 pub const LIBRARY_PREFIX: &str = "tsmod_";
 /// The number of [`ClientExtApi::reserved`] slots.
-pub const API_RESERVED: usize = 32;
+pub const API_RESERVED: usize = 30;
 /// The number of [`ClientExt::reserved`] slots.
-pub const EXT_RESERVED: usize = 16;
+pub const EXT_RESERVED: usize = 12;
 
 /// The file name suffix of an extension library for a platform and architecture, the same as the
 /// server's `tsmod_*` plugins: `.dll`, `_amd64.dll`, `_i386.so`, `_amd64.so`. (The client library
@@ -175,6 +205,25 @@ pub struct ClientExt {
     /// `HUD_Shutdown`. Called even while suspended.
     pub shutdown: Option<extern "C" fn()>,
 
+    // ---- minor 1: `TSExt` channels and interception (issues #294, #295) ---------------------------
+    /// A `TSExt` message on a channel this extension claimed ([`ClientExtApi::claim_channel`]):
+    /// the channel's name and the payload's `len` bytes (at most [`MESSAGE_MAX`] minus the channel
+    /// and its NUL), valid for the call.
+    pub user_message: Option<unsafe extern "C" fn(channel: *const c_char, data: *const u8, len: c_int)>,
+    /// A user message from the server, before the port handles it ([`MessagePre`]): return a
+    /// [`verdict`]. For [`verdict::REPLACE`] write the new payload (the message's own wire format)
+    /// to `out`, which has room for [`MESSAGE_MAX`] bytes, and its length to `*out_len`. The port
+    /// takes only what [`MessagePre::allow`] allows and passes anything else.
+    pub message_pre: Option<unsafe extern "C" fn(msg: *const MessagePre, out: *mut u8, out_len: *mut c_int) -> c_int>,
+    /// One of the port's client commands is about to run ([`CommandPre`]): [`verdict::PASS`], or
+    /// [`verdict::BLOCK`] when [`CommandPre::allow`] has it. Any other verdict passes.
+    pub command_pre: Option<unsafe extern "C" fn(cmd: *const CommandPre) -> c_int>,
+    /// The port is about to send a command to the server ([`CommandPre`]): a [`verdict`]. For
+    /// [`verdict::REPLACE`] write the new line, NUL-terminated, to `out` (`out_cap` bytes, at
+    /// least [`COMMAND_MAX`]): it must keep the command's name (`argv[0]`) and hold no `;` or line
+    /// break, or it counts as a block.
+    pub server_cmd_pre: Option<unsafe extern "C" fn(cmd: *const CommandPre, out: *mut c_char, out_cap: c_int) -> c_int>,
+
     /// Callbacks a later [`MINOR`] defines; leave them NULL.
     pub reserved: [Reserved; EXT_RESERVED],
 }
@@ -199,8 +248,77 @@ impl ClientExt {
         resume: None,
         server_changed: None,
         shutdown: None,
+        user_message: None,
+        message_pre: None,
+        command_pre: None,
+        server_cmd_pre: None,
         reserved: [None; EXT_RESERVED],
     };
+}
+
+/// The longest user message (the Steam engines' `MAX_USER_MSG_DATA`): room in
+/// [`ClientExt::message_pre`]'s `out`, and the limit of a `TSExt` message.
+pub const MESSAGE_MAX: usize = 192;
+/// The longest channel name ([`ClientExtApi::claim_channel`]), the NUL not counted.
+pub const CHANNEL_MAX: usize = 15;
+/// The least room in [`ClientExt::server_cmd_pre`]'s `out`.
+pub const COMMAND_MAX: usize = 256;
+/// How long the port holds a deferred message for an extension before it passes, milliseconds.
+pub const HOLD_MS: u32 = 1000;
+/// The most messages of one kind waiting behind a held one.
+pub const HOLD_QUEUE: usize = 32;
+
+/// An interception hook's answer.
+pub mod verdict {
+    use core::ffi::c_int;
+    /// Go on as if the extension weren't there.
+    pub const PASS: c_int = 0;
+    /// Don't display the message / don't run or send the command.
+    pub const BLOCK: c_int = 1;
+    /// Use the replacement the extension wrote to `out`.
+    pub const REPLACE: c_int = 2;
+    /// Hold the message's display until [`ClientExtApi::release`](super::ClientExtApi::release)
+    /// with the call's token.
+    pub const DEFER: c_int = 3;
+}
+
+/// What a hook's verdict may do ([`MessagePre::allow`], [`CommandPre::allow`]); 0 is
+/// observe-only.
+pub mod allow {
+    pub const BLOCK: u32 = 1;
+    pub const REPLACE: u32 = 2;
+    pub const DEFER: u32 = 4;
+}
+
+/// A user message for [`ClientExt::message_pre`]. Everything is valid for the call only.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MessagePre {
+    /// The message's registered name (`SayText`, `DeathMsg`), NUL-terminated.
+    pub name: *const c_char,
+    /// The payload as it is now (earlier extensions' replacements applied): `len` bytes.
+    pub data: *const u8,
+    pub len: c_int,
+    /// [`allow`] bits.
+    pub allow: u32,
+    /// The token [`ClientExtApi::release`] takes after a [`verdict::DEFER`]; 0 without
+    /// [`allow::DEFER`].
+    pub token: u32,
+}
+
+/// A command for [`ClientExt::command_pre`] and [`ClientExt::server_cmd_pre`]. Everything is
+/// valid for the call only.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CommandPre {
+    /// The whole line, NUL-terminated (`slot3`, `weapon_5`, `menuselect 2`).
+    pub line: *const c_char,
+    /// Its words as the engine tokenises them: `argv[0]` is the command's name.
+    pub argc: c_int,
+    pub argv: *const *const c_char,
+    /// [`allow`] bits: [`allow::BLOCK`] at most for client commands, and
+    /// [`allow::REPLACE`] for commands to the server.
+    pub allow: u32,
 }
 
 /// The command the client just built ([`ClientExt::usercmd`]).
@@ -515,6 +633,20 @@ pub struct ClientExtApi {
     pub weapon_name: unsafe extern "C" fn(id: c_int, buf: *mut c_char, len: c_int) -> c_int,
     pub max_clients: extern "C" fn() -> c_int,
 
+    // ---- minor 1 (NULL in a minor-0 client: check `minor` first) ------------------------------
+    /// Claims a `TSExt` channel (1 to [`CHANNEL_MAX`] bytes of ASCII letters, digits, `_`, `-`,
+    /// `.`; `webview`): its messages go to this extension's [`ClientExt::user_message`]. An
+    /// extension may claim several. [`OK`] (also when it has it already), [`EXISTS`] (another
+    /// extension has it) or [`INVALID`]. Messages on a channel nobody claimed are dropped.
+    pub claim_channel: Option<unsafe extern "C" fn(ext: ExtId, name: *const c_char) -> c_int>,
+    /// Ends a [`verdict::DEFER`]: `token` from the [`MessagePre`], `verdict` [`verdict::PASS`],
+    /// [`verdict::BLOCK`] or [`verdict::REPLACE`] with `len` bytes at `data` (checked as a
+    /// replacement from `message_pre` is). The run then goes on with the next extension. [`OK`],
+    /// [`NOT_FOUND`] (no such hold of this extension's: released already, timed out, or the
+    /// connection it came on ended) or [`INVALID`] (another verdict, a replacement over
+    /// [`MESSAGE_MAX`]).
+    pub release: Option<unsafe extern "C" fn(ext: ExtId, token: u32, verdict: c_int, data: *const u8, len: c_int) -> c_int>,
+
     /// Functions a later [`MINOR`] defines; NULL here. Check [`Self::minor`] first.
     pub reserved: [Reserved; API_RESERVED],
 }
@@ -528,8 +660,14 @@ mod tests {
     #[test]
     fn sizes_are_pinned() {
         let p = size_of::<usize>();
-        assert_eq!(size_of::<ClientExt>(), 8 + 2 * p + 13 * p + EXT_RESERVED * p);
-        assert_eq!(size_of::<ClientExtApi>() % p, 0);
+        // Minor 0's sizes: 13 callbacks + 16 reserved, 29 functions + 32 reserved. Minor 1 named
+        // 4 and 2 of the reserved slots.
+        assert_eq!(size_of::<ClientExt>(), 8 + 2 * p + (13 + 16) * p);
+        assert_eq!(size_of::<ClientExt>(), 8 + 2 * p + (13 + 4 + EXT_RESERVED) * p);
+        assert_eq!(size_of::<ClientExtApi>(), 12usize.next_multiple_of(p) + (29 + 32) * p);
+        assert_eq!(size_of::<ClientExtApi>(), 12usize.next_multiple_of(p) + (29 + 2 + API_RESERVED) * p);
+        assert_eq!(size_of::<MessagePre>(), (2 * p + 12).next_multiple_of(p));
+        assert_eq!(size_of::<CommandPre>(), 4 * p);
         assert_eq!(size_of::<UserCmd>(), 4 * 3 + 4 * 3 + 4 * 3 + 4 * 3);
         assert_eq!(size_of::<GameEvent>(), 16 + NAME_LEN);
         assert_eq!(size_of::<LocalState>(), 4 * 9 + 4 * 13);

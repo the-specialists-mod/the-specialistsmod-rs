@@ -120,7 +120,8 @@ cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, fo
 cargo xtask plugins [<root>...]           # the tsmod_* loader (stub plugin + fixtures it must skip) and the stub's
                                           # bot backend (ts_bot_backend test) on a dedicated server, all roots
 cargo xtask client-plugins [fwgs fwgs-win] # the client extension loader (stub + fixtures it must skip) and the
-                                          # extension API on a listen server; dev profile only (~40 s per root)
+                                          # extension API on a listen server: TSExt both ways with the server
+                                          # stub plugin, the interception hooks; dev profile only (~45 s per root)
 cargo xtask ts21 [--no-clients] [<root>...]
                                           # TS 2.1 mode on every root's dedicated server, driven by rcon:
                                           # the server config's and rcon's ts_gameplay reloads, LMS, The One,
@@ -182,7 +183,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_dev_key <key> <1|0>` (client) presses a key through the engine's `Key_Event`;
   `ts_dev_extsuspend <name> <1|0>` suspends a client extension (both need `ts_dev_scriptinput 1`).
   Client extensions load only if approved; debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
-  (docs/implementation/client-ext-api.md §3).
+  (docs/implementation/client-ext-api.md §3). `ts_dev_extlog 1` (client) logs the extensions'
+  interception decisions as `[ts ext]` lines (§11 there).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

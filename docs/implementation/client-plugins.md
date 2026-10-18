@@ -597,9 +597,12 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
   reads in `ClientConnect`. The client takes `TSPkg` support from the port server's version
   (`SrvSett` keys 5–7), so neither side needs a new discovery channel.
 
-  Original clients never get either message, and design.md §2's contract holds.
+  Original clients never get either message from the port's own code, and design.md §2's
+  contract holds. `TSExt` is built (#294, client-ext-api.md §10): the plugin API's `ext_message`
+  sends it only to `_tsrs` clients. A raw AMX Mod X `message_begin` of `TSExt` goes past the game
+  library, so it is the AMX Mod X module's to guard (tsmod-amxx-rs#22).
 * The registration order of TS's 64 messages doesn't change. New messages are appended after
-  them.
+  them (`shared::protocol::TS_MESSAGES`; `TSExt` is the first).
 * This client on an original TS server gets no offers, because nothing sends them.
 
 ## 13. Version matching
@@ -664,8 +667,9 @@ joins (§13.5). The server reads all three at each connect, so a change applies 
 * **Gameplay rulesets:** a ruleset's own client check (`gameplay::refuse_client`, the TS 2.1
   mode's) runs first and keeps its own reason. In 2.1 mode TS 3.0's client gets the 2.1 refusal
   whatever `sv_client_require_port` says, and port clients then face the version check.
-* **The plugin API** gets `client_port_version(edict)`, so AMX Mod X plugins can apply a policy
-  of their own. A new `PluginApi` entry is a version break, so it waits for the next one (#304).
+* **The plugin API** has `client_port_version(player, buf, len)` since version 8 (#304,
+  plugin-api.md §13), so AMX Mod X plugins can apply a policy of their own: the version as
+  `major.minor.patch`, 0 for TS 3.0's client, bots and HLTV, `UNSUPPORTED` for an unreadable value.
 * **The client side:**
   * The client compares the server's version (`SrvSett` keys 5–7, complete at key 7) with its own
     and prints the difference in the console (`[ts] version: this server runs The Specialists

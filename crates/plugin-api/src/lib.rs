@@ -52,7 +52,9 @@
 //!   ([`PluginApi::entity_key`]), and the touch, damage, shot and pickup callbacks (§11); version 7
 //!   added plugin identities for metamod plugins ([`PluginApi::attach_plugin`],
 //!   [`PluginApi::detach_plugin`], listeners they own), the kung-fu and superjump
-//!   [`player_flag`]s and [`FrameInfo::team_scores`] (§12).
+//!   [`player_flag`]s and [`FrameInfo::team_scores`] (§12); version 8 added the `TSExt` channel
+//!   messages to the port client's extensions ([`PluginApi::ext_message`]) and the port client's
+//!   version ([`PluginApi::client_port_version`]) (§13).
 //!
 //! # Private data
 //! An edict's private data is the server's block, not a C++ object. Since version 5 the server
@@ -118,9 +120,9 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 
 /// The `CreateInterface` name of the table. It carries the version, so a metamod plugin built for
 /// another version gets NULL.
-pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi007";
+pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi008";
 /// [`PluginApi::version`] of this definition (and what [`Plugin::api_version`] must be).
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 /// The entry point every `tsmod_*` library exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_PluginLoad";
 /// The prefix of the libraries the server loads.
@@ -1241,6 +1243,41 @@ pub struct PluginApi {
     /// The id is dead afterwards; the name is free to attach again (with a new id). [`OK`], or
     /// [`INVALID`] for an id that isn't attached (a loaded plugin's included: those stay).
     pub detach_plugin: extern "C" fn(plugin: PluginId) -> c_int,
+
+    // ---- version 8: client extensions, the port client's version --------------------------------
+    /// Sends `len` bytes of `data` on `channel` (1 to [`EXT_CHANNEL_MAX`] bytes of ASCII letters,
+    /// digits, `_`, `-`, `.`) to the client extension that claimed the channel, as one `TSExt`
+    /// message (the port's user message for extensions, docs/implementation/client-ext-api.md
+    /// §10): to `player`, or with `player` 0 to every port client. Only port clients get it (their
+    /// userinfo has `_tsrs`): TS 3.0's client doesn't hook `TSExt` (client-plugins.md §12). The
+    /// payload is at most [`EXT_MESSAGE_MAX`] minus the channel's length and its NUL (176 bytes
+    /// for a 15-byte channel, 184 for `webview`); a longer body is the channel's protocol to split.
+    /// `flags`: [`ext_flag`] bits (0 sends reliably). Returns the number of clients it went to (1
+    /// for a player; any number for 0), or [`NOT_PLAYER`] (no connected player there),
+    /// [`UNSUPPORTED`] (that player isn't a port client: TS 3.0's client, a bot, an HLTV proxy) or
+    /// [`INVALID`] (a bad channel, a payload that doesn't fit, NULL `data` with a length, an
+    /// unknown flag). A client without an extension on the channel drops the message.
+    pub ext_message: unsafe extern "C" fn(player: c_int, channel: *const c_char, data: *const u8, len: c_int, flags: c_int) -> c_int,
+    /// The port version a player's client reported (its `_tsrs` userinfo, the numeric form a first
+    /// connect sends included) as `major.minor.patch`, written to `buf` (NUL-terminated, cut to
+    /// fit); returns its length. 0 (and "") for a client without the port: TS 3.0's, a bot, an
+    /// HLTV proxy. [`UNSUPPORTED`] for a port client whose value isn't a version (the `1` clients
+    /// from before #303 sent first), [`NOT_PLAYER`] for no connected player there
+    /// (client-plugins.md §13.1).
+    pub client_port_version: unsafe extern "C" fn(player: c_int, buf: *mut c_char, len: c_int) -> c_int,
+}
+
+/// The longest [`PluginApi::ext_message`] channel, in bytes.
+pub const EXT_CHANNEL_MAX: usize = 15;
+/// The longest `TSExt` message (the channel, its NUL and the payload): the Steam engines' user
+/// message limit.
+pub const EXT_MESSAGE_MAX: usize = 192;
+
+/// [`PluginApi::ext_message`]'s `flags`.
+pub mod ext_flag {
+    use core::ffi::c_int;
+    /// Unreliable: dropped rather than queued when the client's channel is full.
+    pub const UNRELIABLE: c_int = 1;
 }
 
 #[cfg(test)]
@@ -1257,8 +1294,8 @@ mod tests {
 
     #[test]
     fn the_interface_name_carries_the_version() {
-        assert_eq!(VERSION, 7);
-        assert!(INTERFACE_NAME.to_bytes().ends_with(b"007"));
+        assert_eq!(VERSION, 8);
+        assert!(INTERFACE_NAME.to_bytes().ends_with(b"008"));
     }
 
     #[test]

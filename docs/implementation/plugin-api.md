@@ -14,10 +14,11 @@ of plugin use it:
   from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
   ([bot-plugins.md](bot-plugins.md)).
 
-The current version is **7** (#290: plugin identities for metamod plugins, so an AMX Mod
+The current version is **8** (#294 and #304: `TSExt` messages to the port client's extensions and
+the port client's version; version 7 was #290: plugin identities for metamod plugins, so an AMX Mod
 X-hosted bot can be a backend; version 6 was tsmod-rcbot-rs's needs, version 5 tsmod-amxx-rs#8
 and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible: a break bumps
-`VERSION` and the interface name, so a stale plugin finds nothing (§8, §9, §10, §11, §12).
+`VERSION` and the interface name, so a stale plugin finds nothing (§8, §9, §10, §11, §12, §13).
 
 | Part | Where |
 |---|---|
@@ -26,6 +27,7 @@ and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible
 | The logic: argument checks, deferral, snapshots | `crates/server/src/plugin_api.rs` (tests in `plugin_api/tests.rs`); bots `plugin_api/bots.rs`; entities and game state `plugin_api/world_info.rs` |
 | The `tsmod_*` loader: naming rule, header check, descriptor checks | `crates/server/src/plugins/loader.rs` (pure, unit tested; the naming and header rules are `crates/shared/src/plugin_lib.rs`, shared with the client's extension loader, client-ext-api.md); opening the library and calling it: `crates/server-dll/src/plugins.rs` |
 | Plugin callbacks (when they run), log, data directory, commands, cvars | `crates/server/src/plugins/mod.rs`, `plugins/host.rs` |
+| `ext_message` and `client_port_version` (version 8, §13) | `crates/server/src/plugin_api/ext.rs` (the `TSExt` wire format `crates/shared/src/protocol/ext.rs`, client-ext-api.md §10) |
 | Plugin ids, attached plugins and listener owners (version 7, §1.4) | `crates/server/src/plugins/mod.rs` (`Registry`, `attach_plugin`, `detach_plugin`); their backends `crates/server/src/bot_backend/mod.rs` (`register_plugin`, `drop_plugin`) |
 | The stub plugin | `crates/tsmod-test` (`cargo xtask plugins`) |
 | Power-up runs, time scale, `TSSlowMo` override | `crates/server/src/rules/powerup.rs` |
@@ -49,14 +51,14 @@ and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible
 
 The server library exports tier1's `CreateInterface(name, return_code)` on every platform.
 `mp.dll` always had it, with nothing registered (0x10028f70). On Linux it is the one export the
-port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi007`
+port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi008`
 (`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the `PluginApi` and writes 0
 (`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`
-to `TSRS_PluginApi006` included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
+to `TSRS_PluginApi007` included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
 
 A plugin looks the export up in the game library that is already loaded: metamod's
 `GINFO_REALDLL_FULLPATH`, then `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`. It checks
-`PluginApi::version` (7) and `size`. Such a plugin has no plugin id of its own: it passes
+`PluginApi::version` (8) and `size`. Such a plugin has no plugin id of its own: it passes
 `NO_PLUGIN` (0) where one is asked, and then can't use `data_dir`, `register_bot_backend` or
 `create_bot`, unless it takes an identity with `attach_plugin` (version 7, §1.4). Since version 5
 it can register a `Plugin` descriptor as a **listener** (`add_listener`, §1.3) to get the
@@ -94,7 +96,7 @@ are never unloaded. The rule (`plugins/loader.rs`):
   (name, version, callbacks) and returns `OK`.
 * Skipped with a warning, never a crash: a library that can't be opened, has **no
   `TSRS_PluginLoad`**, returns anything but `OK`, or leaves a **descriptor `size`** other than
-  the server's or an **`api_version`** other than 6. What a refused plugin registered is dropped
+  the server's or an **`api_version`** other than `VERSION` (8). What a refused plugin registered is dropped
   (its commands then do nothing; its bot backend is gone). A library whose load function ran
   stays mapped.
 
@@ -810,3 +812,21 @@ unchanged:
 | `player_flag` ends with `STUNTING` (0x400) | adds `KUNG_FU` (0x800) and `SUPERJUMP` (0x1000) |
 | `FrameInfo` ends with `round` | adds `team_scores[4]` |
 | plugin ids: the survivors' highest + 1 | a process-wide counter (#291) |
+
+## 13. Version 7 → 8
+
+Version 8 (#294, #304) is a break only in name: `CreateInterface` answers only
+`TSRS_PluginApi008` and `Plugin::api_version` must be 8. Every version-7 entry is unchanged; two
+functions are new, last in the table (`crates/server/src/plugin_api/ext.rs`):
+
+| Function | Behaviour |
+|---|---|
+| `ext_message(player, channel, data, len, flags)` | One `TSExt` message (the port's user message for client extensions, registered after TS's 64; client-ext-api.md §10): `string channel` then `len` bytes. To `player` (`MSG_ONE`), or with `player` 0 to every port client, each `MSG_ONE`; `ext_flag::UNRELIABLE` (1) sends `MSG_ONE_UNRELIABLE`. Only clients whose userinfo has `_tsrs` get it, read at the send as `ClientConnect` reads it (`gameplay::with_connecting_client`): TS 3.0's client doesn't hook `TSExt` (client-plugins.md §12). Checks in this order: `NOT_PLAYER` (no connected player there), `INVALID` (a channel that isn't 1 to 15 bytes of ASCII letters, digits, `_`, `-`, `.`; a payload over `EXT_MESSAGE_MAX` (192) minus the channel and its NUL; NULL `data` with a length; an unknown flag), `UNSUPPORTED` (that player isn't a port client: TS 3.0's client, a bot, HLTV). Returns the number of clients it went to (0 for a broadcast with no port client). One message is one delivery: the port doesn't chunk (a channel's own protocol does, as the webview's). |
+| `client_port_version(player, buf, len)` | The player's `_tsrs` as `major.minor.patch` (`port::parse_userinfo_version`: the string, or the numeric form a `+connect` sends first, #303), its length returned. 0 and "" for a client without the port (TS 3.0's, a bot, HLTV); `UNSUPPORTED` for a port client whose value isn't a version (the `1` of clients from before #303); `NOT_PLAYER` otherwise. For AMX Mod X plugins with a version policy of their own (client-plugins.md §13.1). |
+
+Downstream: the AMX Mod X modules (tsmod-amxx-rs#22: the bump, natives for both functions, and a
+metamod guard on raw `message_begin(TSExt)` to clients without `_tsrs`, which the game library
+can't refuse) and the bot plugins pinned by port tag (tsmod-rcbot-rs, tsmod-amxx-rcbot: the bump
+only) move with their next pin. `cargo xtask plugins` checks both functions on a bot-only server
+(`ext_message`, `client_port_version`); `cargo xtask client-plugins` sends `TSExt` to the port
+client and reads its version back (client-ext-api.md §9).

@@ -12,6 +12,13 @@
 //! under Wine). `tsext_test_spawn` starts the helper (`tsmod_test_helper`, listed in
 //! `cl_dlls/tsmod_test.files`) through `verified_spawn`, which writes `spawned.txt` there, and
 //! checks that an unlisted file is refused.
+//!
+//! Minor 1 (#294, #295): it claims the `TSExt` channel `test`; `tsext_test_tsext` sends the server
+//! `tsext_echo hello`, which the server stub plugin (`crates/tsmod-test`, installed in `dlls/` by
+//! xtask) answers on that channel. Its `message_pre` blocks the `SayText` with `tsext_block_me`,
+//! holds the one with `tsext_hold_me` for 20 frames, and rewrites each `DeathMsg`'s weapon;
+//! `tsext_test_arm` makes `command_pre` block the port's `special` and `server_cmd_pre` watch or
+//! rewrite the `_special` it sends.
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -20,8 +27,8 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_client_ext_api::{
-    AimInfo, ClientExt, ClientExtApi, EXISTS, GameEvent, INVALID, LoadInfo, LocalState, MINOR, NAME_LEN, OK, PlayerScore, REFUSED,
-    TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, button, event, hit, player, renderer,
+    AimInfo, ClientExt, ClientExtApi, CommandPre, EXISTS, GameEvent, INVALID, LoadInfo, LocalState, MINOR, MessagePre, NAME_LEN, OK,
+    PlayerScore, REFUSED, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, allow, button, event, hit, player, renderer, verdict,
 };
 
 /// The key `cargo xtask client-plugins` presses with `ts_dev_key` (`K_AUX32`, unbound): the stub
@@ -29,7 +36,7 @@ use ts_client_ext_api::{
 pub const TEST_KEY: c_int = 238;
 
 /// The checks the stub reports, in order. xtask requires each to be `ok`.
-pub const CHECKS: [&str; 41] = [
+pub const CHECKS: [&str; 57] = [
     "load",
     "init",
     "add_command",
@@ -71,7 +78,38 @@ pub const CHECKS: [&str; 41] = [
     "spawn_refused",
     "spawn_started",
     "mouse",
+    // Minor 1: `TSExt` (#294), interception (#295).
+    "claim_channel",
+    "tsext_roundtrip",
+    "tsext_unsupported_bot",
+    "tsext_broadcast",
+    "tsext_too_long",
+    "tsext_bad_channel",
+    "client_port_version",
+    "message_observe",
+    "message_unreachable",
+    "message_block",
+    "message_rewrite",
+    "message_hold",
+    "release_again",
+    "command_protected",
+    "command_block",
+    "server_cmd_pre",
 ];
+
+/// What `tsext_test_arm <mode>` sets up for the port's `special` command and the `_special` it
+/// sends the server.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Arm {
+    #[default]
+    None,
+    /// `command_pre` blocks `special`: no `_special` may follow.
+    Block,
+    /// Both pass: `server_cmd_pre` sees `_special`.
+    Pass,
+    /// `server_cmd_pre` rewrites `_special` as `kill`, which the port refuses (a new name).
+    Rename,
+}
 
 static API: AtomicPtr<ClientExtApi> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -88,6 +126,15 @@ struct State {
     while_suspended: u32,
     key_down: bool,
     key_up: bool,
+    arm: Arm,
+    special_blocked: bool,
+    special_sent_while_blocked: u32,
+    /// The held `SayText`'s token and the frames since.
+    held: Option<(u32, u32)>,
+    /// Messages `message_pre` saw, and how many of them it must never see (`TSExt`, `SrvSett`).
+    messages_seen: u32,
+    unreachable_seen: u32,
+    broadcast_seen: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -188,7 +235,10 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
     }
     with(|s| s.id = info.id);
     let reserved_clear = t.reserved.iter().all(Option::is_none);
-    check("load", t.minor == MINOR && reserved_clear, || format!("minor {} reserved clear {reserved_clear}", t.minor));
+    let minor1 = t.claim_channel.is_some() && t.release.is_some();
+    check("load", t.minor == MINOR && reserved_clear && minor1, || {
+        format!("minor {} reserved clear {reserved_clear} minor 1 {minor1}", t.minor)
+    });
     *out = ClientExt {
         name: c"tsmod_test (client stub)".as_ptr(),
         version: c"1".as_ptr(),
@@ -205,6 +255,10 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
         resume: Some(resume),
         server_changed: Some(server_changed),
         shutdown: Some(shutdown),
+        user_message: Some(user_message),
+        message_pre: Some(message_pre),
+        command_pre: Some(command_pre),
+        server_cmd_pre: Some(server_cmd_pre),
         ..ClientExt::EMPTY
     };
     OK
@@ -245,6 +299,188 @@ extern "C" fn init() {
     };
     check("register_cvar", v1 == OK, || format!("{v1}"));
     check("register_cvar_exists", v2 == EXISTS && v3 == EXISTS, || format!("{v2} {v3}"));
+    // SAFETY: as above.
+    unsafe {
+        (a.add_command)(me, c"tsext_test_tsext".as_ptr(), cmd_tsext);
+        (a.add_command)(me, c"tsext_test_arm".as_ptr(), cmd_arm);
+    }
+    let Some(claim) = a.claim_channel else { return };
+    // SAFETY: a minor-1 table function, called with ids and NUL-terminated names.
+    let (k1, k2, k3, k4) = unsafe {
+        (claim(me, c"test".as_ptr()), claim(me, c"test".as_ptr()), claim(me, c"bad name".as_ptr()), claim(me + 1000, c"other".as_ptr()))
+    };
+    check("claim_channel", k1 == OK && k2 == OK && k3 == INVALID && k4 == INVALID, || format!("{k1} {k2} {k3} {k4}"));
+}
+
+/// `tsext_test_tsext`: the extension's command to the server (the reverse direction): the server
+/// stub plugin answers `tsext_echo` on the `TSExt` channel `test` ([`user_message`]).
+extern "C" fn cmd_tsext() {
+    // SAFETY: a table function, called with this extension's id and a NUL-terminated line.
+    let rc = unsafe { (api().server_cmd)(id(), c"tsext_echo hello".as_ptr()) };
+    if rc != OK {
+        print(&format!("tsext_echo not sent: {rc}"));
+    }
+}
+
+/// `tsext_test_arm none|block|pass|rename` ([`Arm`]).
+extern "C" fn cmd_arm() {
+    let a = api();
+    // SAFETY: `cmd_argv` returns a NUL-terminated string valid until the next command.
+    let mode = unsafe { CStr::from_ptr((a.cmd_argv)(1)) }.to_string_lossy().into_owned();
+    let arm = match mode.as_str() {
+        "block" => Arm::Block,
+        "pass" => Arm::Pass,
+        "rename" => Arm::Rename,
+        _ => Arm::None,
+    };
+    with(|s| s.arm = arm);
+}
+
+/// The minor-1 `release` (the table has it: `load` checks).
+fn release(token: u32, verdict: c_int) -> c_int {
+    match api().release {
+        // SAFETY: a table function, called with this extension's id and no data.
+        Some(f) => unsafe { f(id(), token, verdict, std::ptr::null(), 0) },
+        None => INVALID,
+    }
+}
+
+unsafe extern "C" fn user_message(channel: *const c_char, data: *const u8, len: c_int) {
+    if quiet() || channel.is_null() || (data.is_null() && len != 0) || len < 0 {
+        return;
+    }
+    // SAFETY: the client passes a NUL-terminated channel and `len` bytes, valid for the call.
+    let (channel, data) =
+        unsafe { (CStr::from_ptr(channel), if len == 0 { &[][..] } else { std::slice::from_raw_parts(data, len as usize) }) };
+    if channel != c"test" {
+        print(&format!("FAIL: a message on channel {channel:?}, which it never claimed"));
+        return;
+    }
+    let text = String::from_utf8_lossy(data).into_owned();
+    if text == "broadcast" {
+        with(|s| s.broadcast_seen = true);
+        return;
+    }
+    let Some(rest) = text.strip_prefix("echo:") else { return };
+    let field = |k: &str| rest.split(' ').find_map(|w| w.strip_prefix(&format!("{k}="))).unwrap_or("").to_owned();
+    let version = get_string(api().port_version);
+    check("tsext_roundtrip", rest.starts_with("hello "), || format!("{rest:?}"));
+    // The plugin API's `UNSUPPORTED` (-3): a bot isn't a port client.
+    check("tsext_unsupported_bot", field("bot") == "-3", || format!("bot={}", field("bot")));
+    let seen = with(|s| s.broadcast_seen);
+    check("tsext_broadcast", field("all") == "1" && seen, || format!("all={} seen {seen}", field("all")));
+    check("tsext_too_long", field("big") == INVALID.to_string(), || format!("big={}", field("big")));
+    check("tsext_bad_channel", field("badch") == INVALID.to_string(), || format!("badch={}", field("badch")));
+    check("client_port_version", field("ver") == version, || format!("ver={} (this client {version})", field("ver")));
+}
+
+/// Whether `data` holds `what`.
+fn has(data: &[u8], what: &[u8]) -> bool {
+    data.windows(what.len()).any(|w| w == what)
+}
+
+/// The interception checks: observe a state message, never see `TSExt` or `SrvSett`, block the
+/// `SayText` with `tsext_block_me`, hold the one with `tsext_hold_me` (released from [`frame`]),
+/// and rewrite every `DeathMsg`'s weapon as `tsext_rewritten` (the script's `kill`).
+unsafe extern "C" fn message_pre(m: *const MessagePre, out: *mut u8, out_len: *mut c_int) -> c_int {
+    if quiet() || m.is_null() {
+        return verdict::PASS;
+    }
+    // SAFETY: the client passes a `MessagePre` whose name and data are valid for the call.
+    let m = unsafe { *m };
+    // SAFETY: as above.
+    let (name, data) = unsafe {
+        (CStr::from_ptr(m.name), if m.len <= 0 || m.data.is_null() { &[][..] } else { std::slice::from_raw_parts(m.data, m.len as usize) })
+    };
+    with(|s| {
+        s.messages_seen += 1;
+        if name == c"TSExt" || name == c"SrvSett" {
+            s.unreachable_seen += 1;
+        }
+    });
+    if (name == c"TSHealth" || name == c"CurWeapon" || name == c"ScoreInfo") && m.allow == 0 && m.token == 0 {
+        check("message_observe", true, String::new);
+    }
+    if name == c"SayText" && has(data, b"tsext_block_me") {
+        check("message_block", m.allow & allow::BLOCK != 0, || format!("allow {}", m.allow));
+        return verdict::BLOCK;
+    }
+    if name == c"SayText" && has(data, b"tsext_hold_me") && m.allow & allow::DEFER != 0 && m.token != 0 {
+        with(|s| s.held = Some((m.token, 0)));
+        return verdict::DEFER;
+    }
+    if name == c"DeathMsg" && m.allow & allow::REPLACE != 0 && data.len() >= 2 && !out.is_null() && !out_len.is_null() {
+        let mut new = vec![data[0], data[1]];
+        new.extend_from_slice(b"tsext_rewritten\0");
+        // SAFETY: `out` has room for `MESSAGE_MAX` bytes (more than written) and `out_len` is
+        // writable (the descriptor's contract).
+        unsafe {
+            std::ptr::copy_nonoverlapping(new.as_ptr(), out, new.len());
+            *out_len = new.len() as c_int;
+        }
+        check("message_rewrite", true, String::new);
+        return verdict::REPLACE;
+    }
+    verdict::PASS
+}
+
+/// The argv of a [`CommandPre`].
+///
+/// # Safety
+/// `c` is valid for the call, as the client passes it.
+unsafe fn words(c: &CommandPre) -> Vec<String> {
+    (0..c.argc.max(0) as usize)
+        // SAFETY: `argv` holds `argc` NUL-terminated strings (the caller's guarantee).
+        .map(|i| unsafe { CStr::from_ptr(*c.argv.add(i)) }.to_string_lossy().into_owned())
+        .collect()
+}
+
+unsafe extern "C" fn command_pre(c: *const CommandPre) -> c_int {
+    if quiet() || c.is_null() {
+        return verdict::PASS;
+    }
+    // SAFETY: the client passes a `CommandPre` valid for the call.
+    let c = unsafe { *c };
+    // SAFETY: as above.
+    let argv = unsafe { words(&c) };
+    let name = argv.first().cloned().unwrap_or_default();
+    if (name == "+attack" || name == "+use") && c.allow == 0 {
+        check("command_protected", true, String::new);
+    }
+    if name == "special" && with(|s| s.arm) == Arm::Block {
+        check("command_block", c.allow & allow::BLOCK != 0, || format!("allow {}", c.allow));
+        with(|s| s.special_blocked = true);
+        return verdict::BLOCK;
+    }
+    verdict::PASS
+}
+
+unsafe extern "C" fn server_cmd_pre(c: *const CommandPre, out: *mut c_char, out_cap: c_int) -> c_int {
+    if quiet() || c.is_null() {
+        return verdict::PASS;
+    }
+    // SAFETY: the client passes a `CommandPre` valid for the call.
+    let c = unsafe { *c };
+    // SAFETY: as above.
+    let argv = unsafe { words(&c) };
+    if argv.first().map(String::as_str) != Some("_special") {
+        return verdict::PASS;
+    }
+    match with(|s| s.arm) {
+        Arm::Block => with(|s| s.special_sent_while_blocked += 1),
+        Arm::Pass => {
+            let (blocked, leaked) = with(|s| (s.special_blocked, s.special_sent_while_blocked));
+            let can = c.allow & (allow::BLOCK | allow::REPLACE) == allow::BLOCK | allow::REPLACE;
+            check("server_cmd_pre", can && blocked && leaked == 0, || format!("allow {} blocked {blocked} leaked {leaked}", c.allow));
+        }
+        Arm::Rename if !out.is_null() && out_cap > 5 => {
+            // SAFETY: `out` has room for `out_cap` bytes (more than written).
+            unsafe { std::ptr::copy_nonoverlapping(c"kill".as_ptr(), out, 5) };
+            return verdict::REPLACE;
+        }
+        _ => {}
+    }
+    verdict::PASS
 }
 
 extern "C" fn vid_init() {
@@ -262,6 +498,19 @@ extern "C" fn frame(_time: f64) {
         s.frames
     });
     check("frame", n > 10, || format!("{n} frames"));
+    // The held `SayText` goes out 20 frames later; a second release finds nothing.
+    let due = with(|s| {
+        let (token, frames) = s.held.as_mut()?;
+        *frames += 1;
+        let t = (*frames > 20).then_some(*token)?;
+        s.held = None;
+        Some(t)
+    });
+    if let Some(t) = due {
+        let (first, again) = (release(t, verdict::PASS), release(t, verdict::PASS));
+        check("message_hold", first == OK, || format!("{first}"));
+        check("release_again", again == ts_client_ext_api::NOT_FOUND, || format!("{again}"));
+    }
 }
 
 extern "C" fn redraw(_time: f32, _intermission: c_int) {
@@ -504,6 +753,8 @@ extern "C" fn cmd_report() {
         return;
     }
     queries();
+    let (seen, bad) = with(|s| (s.messages_seen, s.unreachable_seen));
+    check("message_unreachable", seen > 0 && bad == 0, || format!("{bad} of {seen} were TSExt or SrvSett"));
     let dir = data_dir();
     let lines: Vec<String> = with(|s| {
         CHECKS

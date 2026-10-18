@@ -20,27 +20,63 @@
 //! | `game_event` | after the HUD handled a message ([`on_hud_message`]) |
 //! | `server_changed` | `HUD_Frame`, when the net status' server changes |
 //! | `shutdown` | `HUD_Shutdown` (even while suspended) |
+//! | `user_message` | a `TSExt` message on a channel the extension claimed ([`on_tsext`]) |
+//! | `message_pre` | each user message, before the HUD ([`message_pre`], [`intercept`]) |
+//! | `command_pre` | each port client command, before it runs (`goldsrc`'s command filter) |
+//! | `server_cmd_pre` | each command the port sends to the server (`goldsrc`'s server command filter) |
 //!
 //! Every dispatch copies the list of extensions out first, so an extension may call the table
 //! (which reads this module's state) from any callback.
 
 pub mod events;
 pub mod gate;
+pub mod intercept;
 pub mod view;
 
 use gate::{ApprovalGate, Approved, Candidate};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
+pub use intercept::{Dispatch, Verdict};
 use shared::plugin_lib;
+use shared::protocol::Msg;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use ts_client_ext_api::{EXISTS, ExtId, FAILED, GameEvent, INVALID, NOT_FOUND, OK, REFUSED, SUSPENDED, UserCmd, VisiblePlayer};
+use ts_client_ext_api::{EXISTS, ExtId, FAILED, GameEvent, INVALID, NOT_FOUND, OK, REFUSED, SUSPENDED, UserCmd, VisiblePlayer, allow};
+
+/// A user message for [`ExtHooks::message_pre`].
+pub struct MsgCall<'a> {
+    pub name: &'a CStr,
+    pub data: &'a [u8],
+    pub allow: u32,
+    pub token: u32,
+}
+
+/// A command for [`ExtHooks::command_pre`] and [`ExtHooks::server_cmd_pre`].
+pub struct CmdCall<'a> {
+    pub line: &'a CStr,
+    pub argv: &'a [CString],
+    pub allow: u32,
+}
 
 /// A loaded extension's callbacks. `ts-client-dll` implements it over the extension's C
 /// descriptor; every method does nothing unless the extension gave that callback.
 pub trait ExtHooks {
+    /// A `TSExt` message on one of its channels.
+    fn user_message(&self, _channel: &CStr, _data: &[u8]) {}
+    /// Its verdict on a user message ([`intercept`]).
+    fn message_pre(&self, _msg: &MsgCall) -> Verdict {
+        Verdict::Pass
+    }
+    /// Its verdict on a client command (`Pass` or `Block`).
+    fn command_pre(&self, _cmd: &CmdCall) -> Verdict {
+        Verdict::Pass
+    }
+    /// Its verdict on a command to the server (`Replace` holds the new line).
+    fn server_cmd_pre(&self, _cmd: &CmdCall) -> Verdict {
+        Verdict::Pass
+    }
     fn init(&self) {}
     fn vid_init(&self) {}
     fn frame(&self, _time: f64) {}
@@ -100,6 +136,12 @@ struct State {
     server: Option<String>,
     cursor: bool,
     visible: Option<(u64, Vec<VisiblePlayer>)>,
+    /// `TSExt` channels and the extension that claimed each.
+    channels: Vec<(Vec<u8>, ExtId)>,
+    /// Held messages ([`intercept::Holds`]); taken out while extensions are asked.
+    holds: intercept::Holds,
+    /// Interception warnings already printed (once per extension and text).
+    warned: Vec<(ExtId, String)>,
 }
 
 static STATE: Global<RefCell<Option<State>>> = Global(RefCell::new(None));
@@ -117,6 +159,16 @@ fn active() -> Vec<Rc<dyn ExtHooks>> {
 /// Every loaded extension's callbacks, suspended or not.
 fn all() -> Vec<Rc<dyn ExtHooks>> {
     with(|s| s.exts.iter().filter_map(|e| e.hooks.clone()).collect())
+}
+
+/// The loaded, not suspended extensions with their ids, in load order.
+fn active_ids() -> Vec<(ExtId, Rc<dyn ExtHooks>)> {
+    with(|s| s.exts.iter().filter(|e| !e.suspended).filter_map(|e| Some((e.id, e.hooks.clone()?))).collect())
+}
+
+/// Extension `id`'s callbacks while it is loaded and not suspended.
+fn active_hooks(id: ExtId) -> Option<Rc<dyn ExtHooks>> {
+    with(|s| s.exts.iter().find(|e| e.id == id && !e.suspended).and_then(|e| e.hooks.clone()))
 }
 
 fn say(line: &str) {
@@ -262,6 +314,9 @@ pub fn init() {
     engine().add_command(c"ts_dev_extsuspend", cmd_dev_suspend);
     engine().add_command(c"ts_dev_extlist", cmd_dev_list);
     engine().add_command(c"ts_dev_key", cmd_dev_key);
+    DEV_EXT_LOG.0.set(Cvar::register(c"ts_dev_extlog", c"0", 0));
+    goldsrc::client::set_command_filter(Some(command_filter));
+    goldsrc::ext::hud::set_server_cmd_filter(Some(server_cmd_filter));
     with(|s| s.hud_init = true);
     for h in active() {
         h.init();
@@ -289,6 +344,7 @@ pub fn frame(time: f64) {
     for h in active() {
         h.frame(time);
     }
+    with_holds(|h, ask, warn| h.tick(now_ms(), ask, warn));
     let cursor = active().iter().any(|h| h.wants_cursor());
     with(|s| s.cursor = cursor);
 }
@@ -297,7 +353,11 @@ pub fn frame(time: f64) {
 /// its connection, client-plugins.md §13.3), then every extension hears of it.
 fn server_changed(server: Option<String>) {
     let address = CString::new(server.clone().unwrap_or_default()).unwrap_or_default();
-    with(|s| s.server = server);
+    // What the last connection's extensions held isn't displayed on the next.
+    with(|s| {
+        s.server = server;
+        s.holds.clear();
+    });
     resume_all();
     for h in active() {
         h.server_changed(&address);
@@ -397,9 +457,11 @@ pub fn suspend(name: &str, reason: &str) -> bool {
     let hooks = with(|s| {
         let e = s.exts.iter_mut().find(|e| e.name == name && !e.suspended && e.hooks.is_some())?;
         e.suspended = true;
-        e.hooks.clone()
+        Some((e.id, e.hooks.clone()?))
     });
-    let Some(h) = hooks else { return false };
+    let Some((id, h)) = hooks else { return false };
+    // Its holds pass, and it isn't asked again.
+    with_holds(|holds, ask, warn| holds.drop_ext(id, now_ms(), ask, warn));
     h.suspend(&CString::new(reason).unwrap_or_default());
     true
 }
@@ -504,7 +566,9 @@ pub fn host_cmd(id: ExtId, cmd: &str, server: bool) -> i32 {
         return SUSPENDED;
     }
     if server {
-        engine().server_cmd(cmd);
+        // An extension's own commands (the webview's `wv`) don't pass the other extensions'
+        // `server_cmd_pre`: that hook is for the port's commands.
+        engine().server_cmd_unfiltered(cmd);
     } else {
         let mut line = cmd.to_owned();
         if !line.ends_with('\n') {
@@ -595,6 +659,210 @@ pub fn host_visible_players() -> Vec<VisiblePlayer> {
     let v = view::visible_players();
     with(|s| s.visible = Some((frame, v.clone())));
     v
+}
+
+// ---- TSExt channels (issue #294) -----------------------------------------------------------------
+
+/// `ClientExtApi::claim_channel`.
+pub fn host_claim_channel(id: ExtId, name: &[u8]) -> i32 {
+    if name_of(id).is_none() || !shared::protocol::ext::valid_channel(name) {
+        return INVALID;
+    }
+    with(|s| match s.channels.iter().find(|(c, _)| c == name) {
+        Some((_, owner)) if *owner == id => OK,
+        Some(_) => EXISTS,
+        None => {
+            s.channels.push((name.to_vec(), id));
+            OK
+        }
+    })
+}
+
+/// A `TSExt` message: to the extension that claimed its channel, unless it is suspended. A
+/// message on an unclaimed channel, or a malformed one, is dropped without a word (servers may
+/// send them to any port client).
+pub fn on_tsext(buf: &[u8]) {
+    let Some((channel, payload)) = shared::protocol::ext::decode(buf) else { return };
+    let Some(owner) = with(|s| s.channels.iter().find(|(c, _)| c == channel).map(|(_, id)| *id)) else { return };
+    let Some(h) = active_hooks(owner) else { return };
+    h.user_message(&CString::new(channel).unwrap_or_default(), payload);
+}
+
+// ---- interception (issue #295) -------------------------------------------------------------------
+
+/// `ts_dev_extlog 1` (port-only development aid): what the interception hooks decided, as
+/// `[ts ext]` console lines, for `cargo xtask client-plugins`.
+static DEV_EXT_LOG: Global<std::cell::Cell<Cvar>> = Global(std::cell::Cell::new(Cvar::NULL));
+
+/// Prints `[ts ext] <line>` when `ts_dev_extlog` is on.
+fn ext_log(line: impl FnOnce() -> String) {
+    if DEV_EXT_LOG.0.get().value() != 0.0 {
+        engine().print(&format!("[ts ext] {}\n", line()));
+    }
+}
+
+/// A payload's printable ASCII, for [`ext_log`].
+fn printable(b: &[u8]) -> String {
+    b.iter().filter(|c| c.is_ascii_graphic() || **c == b' ').take(80).map(|&c| c as char).collect()
+}
+
+/// Milliseconds on a monotonic clock: the holds' timeouts.
+fn now_ms() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// A console warning about an extension's verdict, once per extension and text.
+fn warn_once(id: ExtId, text: String) {
+    let first = with(|s| {
+        let seen = s.warned.iter().any(|(i, t)| *i == id && *t == text);
+        if !seen && s.warned.len() < 256 {
+            s.warned.push((id, text.clone()));
+        }
+        !seen
+    });
+    if first {
+        host_print(id, format!("warning: {text}").as_bytes());
+    }
+}
+
+/// Asks extension `a.ext` about a message: `None` if it no longer takes part.
+fn ask_message(a: &intercept::Ask) -> Option<Verdict> {
+    let h = active_hooks(a.ext)?;
+    Some(h.message_pre(&MsgCall { name: a.kind.name(), data: a.data, allow: a.allow, token: a.token }))
+}
+
+/// Runs `f` on the holds taken out of the state (so the extensions it asks may call the table),
+/// then displays what it released.
+fn with_holds(f: impl FnOnce(&mut intercept::Holds, &mut intercept::AskFn, &mut intercept::WarnFn) -> Vec<(Msg, Vec<u8>)>) {
+    if with(|s| s.holds.is_empty()) {
+        return;
+    }
+    let mut holds = with(|s| std::mem::take(&mut s.holds));
+    let out = f(&mut holds, &mut ask_message, &mut warn_once);
+    with(|s| s.holds = holds);
+    for (m, p) in out {
+        ext_log(|| format!("{} released: {}", m.name().to_string_lossy(), printable(&p)));
+        crate::hud::display_released(m, &p);
+    }
+}
+
+/// A user message from the server, before the HUD: what the extensions make of it
+/// ([`intercept::Holds::message`]).
+pub fn message_pre(m: Msg, buf: &[u8]) -> Dispatch {
+    if intercept::message_allow(m).is_none() {
+        return Dispatch::Whole;
+    }
+    let ids: Vec<ExtId> = active_ids().into_iter().map(|(id, _)| id).collect();
+    if ids.is_empty() {
+        return Dispatch::Whole;
+    }
+    let mut holds = with(|s| std::mem::take(&mut s.holds));
+    let d = holds.message(m, buf, &ids, now_ms(), &mut ask_message, &mut warn_once);
+    with(|s| s.holds = holds);
+    if intercept::message_allow(m) != Some(0) {
+        ext_log(|| {
+            let what = match &d {
+                Dispatch::Whole => "passed".to_owned(),
+                Dispatch::Split(Some(p)) => format!("rewritten: {}", printable(p)),
+                Dispatch::Split(None) => "blocked or held".to_owned(),
+            };
+            format!("{} {what} (came as: {})", m.name().to_string_lossy(), printable(buf))
+        });
+    }
+    d
+}
+
+/// `ClientExtApi::release`: `verdict` a `ts_client_ext_api::verdict` code, `data` the
+/// replacement for `REPLACE`.
+pub fn host_release(id: ExtId, token: u32, verdict: i32, data: Option<&[u8]>) -> i32 {
+    use ts_client_ext_api::verdict as v;
+    if name_of(id).is_none() {
+        return INVALID;
+    }
+    let verdict = match (verdict, data) {
+        (v::PASS, _) => Verdict::Pass,
+        (v::BLOCK, _) => Verdict::Block,
+        (v::REPLACE, Some(d)) if d.len() <= ts_client_ext_api::MESSAGE_MAX => Verdict::Replace(d.to_vec()),
+        _ => return INVALID,
+    };
+    let mut found = false;
+    with_holds(|h, ask, warn| match h.release(id, token, verdict, now_ms(), ask, warn) {
+        Some(out) => {
+            found = true;
+            out
+        }
+        None => Vec::new(),
+    });
+    if found { OK } else { NOT_FOUND }
+}
+
+/// The command filter (`goldsrc::client::set_command_filter`): each port client command, before
+/// it runs. False swallows it.
+fn command_filter(name: &CStr) -> bool {
+    let list = active_ids();
+    if list.is_empty() {
+        return true;
+    }
+    let lower = name.to_string_lossy().to_ascii_lowercase();
+    let own = with(|s| s.commands.iter().any(|c| c.name == lower));
+    let allowed = intercept::command_allow(&lower, own);
+    let e = engine();
+    let argv: Vec<CString> = (0..e.cmd_argc()).map(|i| e.cmd_argv(i).to_owned()).collect();
+    let line = CString::new(argv.iter().map(|a| quote(&a.to_string_lossy())).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    for (id, h) in list {
+        match h.command_pre(&CmdCall { line: &line, argv: &argv, allow: allowed }) {
+            Verdict::Pass => {}
+            Verdict::Block if allowed & allow::BLOCK != 0 => {
+                ext_log(|| format!("command {lower} blocked"));
+                return false;
+            }
+            other => warn_once(id, format!("command {lower} doesn't take {other:?}: passed")),
+        }
+    }
+    true
+}
+
+/// A word as a command line carries it: quoted when it has spaces.
+fn quote(w: &str) -> String {
+    if w.is_empty() || w.contains(char::is_whitespace) { format!("\"{w}\"") } else { w.to_owned() }
+}
+
+/// The server command filter (`goldsrc::ext::hud::set_server_cmd_filter`): each command the
+/// port sends to the server. The line to send, or `None`.
+fn server_cmd_filter(cmd: &str) -> Option<String> {
+    let list = active_ids();
+    if list.is_empty() {
+        return Some(cmd.to_owned());
+    }
+    let name = intercept::tokenize(cmd).into_iter().next().unwrap_or_default();
+    let allowed = intercept::server_cmd_allow(&name);
+    let mut line = cmd.to_owned();
+    for (id, h) in list {
+        let argv: Vec<CString> = intercept::tokenize(&line).into_iter().map(|w| CString::new(w).unwrap_or_default()).collect();
+        let cline = CString::new(line.clone()).unwrap_or_default();
+        match h.server_cmd_pre(&CmdCall { line: &cline, argv: &argv, allow: allowed }) {
+            Verdict::Pass => {}
+            Verdict::Block if allowed & allow::BLOCK != 0 => {
+                ext_log(|| format!("server command {cmd:?} blocked"));
+                return None;
+            }
+            Verdict::Replace(new) if allowed & allow::REPLACE != 0 => {
+                let new = String::from_utf8_lossy(&new).into_owned();
+                match intercept::check_command_line(&name, &new) {
+                    Ok(()) => line = new,
+                    Err(why) => {
+                        warn_once(id, format!("its replacement for server command {name} {why}: blocked"));
+                        ext_log(|| format!("server command {cmd:?} blocked (a bad replacement)"));
+                        return None;
+                    }
+                }
+            }
+            other => warn_once(id, format!("server command {name} doesn't take {other:?}: passed")),
+        }
+    }
+    ext_log(|| format!("server command {cmd:?} sent as {line:?}"));
+    Some(line)
 }
 
 // ---- dev aids (port additions) ------------------------------------------------------------------

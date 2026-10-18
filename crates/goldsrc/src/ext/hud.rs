@@ -33,6 +33,18 @@ use crate::sys::*;
 use crate::util::{cstr, to_cstring};
 use std::ffi::{CStr, c_int};
 
+/// The server command filter ([`set_server_cmd_filter`]): the line to send instead of `cmd`, or
+/// `None` to send nothing.
+pub type ServerCmdFilter = fn(cmd: &str) -> Option<String>;
+
+static SERVER_CMD_FILTER: crate::Global<std::cell::Cell<Option<ServerCmdFilter>>> = crate::Global(std::cell::Cell::new(None));
+
+/// Installs the filter [`ClEngine::server_cmd`] passes every line through. Port addition: the
+/// client extensions' `server_cmd_pre` hook.
+pub fn set_server_cmd_filter(f: Option<ServerCmdFilter>) {
+    SERVER_CMD_FILTER.0.set(f);
+}
+
 /// `PM_STUDIO_BOX` trace flag for `EV_PlayerTrace` (SDK pm_defs.h: 0 normal, 1 studio ignore,
 /// 2 studio box).
 pub const PM_STUDIO_BOX: c_int = 2;
@@ -220,7 +232,21 @@ impl ClEngine {
 
     /// `pfnServerCmd`: the single wrapper for it. Every engine fills the slot; if it is null the
     /// command is dropped rather than panicking, since callers are fire-and-forget.
+    ///
+    /// The server command filter ([`set_server_cmd_filter`]) sees the line first and may block or
+    /// rewrite it.
     pub fn server_cmd(&self, cmd: &str) {
+        match SERVER_CMD_FILTER.0.get() {
+            Some(filter) => {
+                if let Some(line) = filter(cmd) {
+                    self.server_cmd_unfiltered(&line);
+                }
+            }
+            None => self.server_cmd_unfiltered(cmd),
+        }
+    }
+    /// `pfnServerCmd` without the filter (the client extensions' own commands).
+    pub fn server_cmd_unfiltered(&self, cmd: &str) {
         let Some(f) = self.f.pfnServerCmd else { return };
         let s = to_cstring(cmd);
         // SAFETY: engine callback from the client function table, called with a NUL-terminated string that outlives the call.

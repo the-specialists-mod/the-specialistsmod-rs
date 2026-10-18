@@ -8,9 +8,9 @@ use shared::protocol::MESSAGES;
 pub use shared::protocol::Msg;
 use std::cell::Cell;
 
-static IDS: Global<[Cell<i32>; 64]> = Global([const { Cell::new(0) }; 64]);
+static IDS: Global<[Cell<i32>; MESSAGES.len()]> = Global([const { Cell::new(0) }; MESSAGES.len()]);
 
-/// Registers every message in TS order. Called once from `GameInit`. From then on every message
+/// Registers every message in TS order, then the port's own (`TSExt`, after TS's 64). Called once from `GameInit`. From then on every message
 /// the game sends passes the active gameplay plugin's `ServerRules::outgoing_message`.
 pub fn register_all() {
     for (m, name, size) in MESSAGES {
@@ -61,5 +61,3 @@ pub fn pvs(m: Msg, origin: [f32; 3]) -> MsgWriter {
 pub fn pas(m: Msg, origin: [f32; 3]) -> MsgWriter {
     MsgWriter::begin(MSG_PAS as i32, id(m), Some(origin), std::ptr::null_mut())
 }
-
-const _: () = assert!(MESSAGES.len() <= 64);

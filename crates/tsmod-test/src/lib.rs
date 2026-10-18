@@ -30,6 +30,10 @@
 //! Every frame its bots' kung-fu and superjump flags must match `player_info`, and `frame_info`'s
 //! team scores `game_state`'s.
 //!
+//! Plugin API version 8: `ext_message` and `client_port_version` on a bot (not a port client) and
+//! with bad arguments. On a listen server with the port client (`cargo xtask client-plugins`) it
+//! answers the stub client extension's `tsext_echo` command on the `TSExt` channel `test`.
+//!
 //! The plugin keeps its state behind a mutex, which it never holds while calling the API: the
 //! server calls back into the plugin from inside API calls (`create_bot` spawns the bot).
 
@@ -43,7 +47,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_plugin_api::{
     BotBackend, BotCmd, BotCmdResult, DEFERRED, DamageEvent, EXISTS, EntityInfo, FrameInfo, GameState, HamArg, HamCall, INVALID, ItemInfo,
     KillInfo, LoadInfo, NO_PLUGIN, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PlayerSnapshot, Plugin, PluginApi, PluginId, UNSUPPORTED,
-    VERSION, WeaponEntry, cmd, cmd_event, entity, ham, item, log, player_flag, powerup, stunt,
+    VERSION, WeaponEntry, cmd, cmd_event, entity, ext_flag, ham, item, log, player_flag, powerup, stunt,
 };
 
 /// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots, and of the
@@ -813,6 +817,8 @@ fn probe(a: &PluginApi, idx: c_int, i: &PlayerInfo) -> bool {
     let rc = unsafe { (a.bot_command)(idx, c"tsmod_test_ping 1".as_ptr()) };
     check("bot_command", rc == OK || rc == DEFERRED);
     check("private_size", (a.private_size)(idx) > 0 && (a.private_size)(-1) == NOT_PLAYER);
+    check("ext_message", ext_message_checks(a, idx));
+    check("client_port_version", client_port_version_checks(a, idx));
     // A held double fire rate (the cheat; the server config turns `sv_cheats` on), then used:
     // `player_powerup` with its bit.
     // SAFETY: NUL-terminated commands for the calls.
@@ -821,6 +827,70 @@ fn probe(a: &PluginApi, idx: c_int, i: &PlayerInfo) -> bool {
         (a.bot_command)(idx, c"usepowerup".as_ptr());
     }
     true
+}
+
+/// `PluginApi::ext_message` (version 8) on a bot-only server: a bot isn't a port client, nobody
+/// gets a broadcast, and the arguments are checked.
+fn ext_message_checks(a: &PluginApi, bot: c_int) -> bool {
+    let fits = [7u8; ts_plugin_api::EXT_MESSAGE_MAX - 5];
+    // SAFETY: NUL-terminated channels and payloads of the lengths given (NULL with 0).
+    unsafe {
+        let to_bot = (a.ext_message)(bot, c"test".as_ptr(), b"x".as_ptr(), 1, 0);
+        let all = (a.ext_message)(0, c"test".as_ptr(), std::ptr::null(), 0, ext_flag::UNRELIABLE);
+        let nobody = (a.ext_message)(-1, c"test".as_ptr(), std::ptr::null(), 0, 0);
+        let too_long = (a.ext_message)(0, c"test".as_ptr(), fits.as_ptr(), fits.len() as c_int + 1, 0);
+        let longest = (a.ext_message)(0, c"test".as_ptr(), fits.as_ptr(), fits.len() as c_int, 0);
+        let bad_channel = (a.ext_message)(0, c"a b".as_ptr(), std::ptr::null(), 0, 0);
+        let bad_flag = (a.ext_message)(0, c"test".as_ptr(), std::ptr::null(), 0, 2);
+        let null_data = (a.ext_message)(0, c"test".as_ptr(), std::ptr::null(), 3, 0);
+        let ok = to_bot == UNSUPPORTED
+            && all == 0
+            && nobody == NOT_PLAYER
+            && too_long == INVALID
+            && longest == 0
+            && bad_channel == INVALID
+            && bad_flag == INVALID
+            && null_data == INVALID;
+        if !ok {
+            say(log::ERROR, &format!("ext_message: {to_bot} {all} {nobody} {too_long} {longest} {bad_channel} {bad_flag} {null_data}"));
+        }
+        ok
+    }
+}
+
+/// `PluginApi::client_port_version` (version 8): a bot has no port version; slot 0 isn't a player.
+fn client_port_version_checks(a: &PluginApi, bot: c_int) -> bool {
+    let mut buf = [b'x' as c_char; 16];
+    // SAFETY: `buf` is writable for its length.
+    let (n, none) =
+        unsafe { ((a.client_port_version)(bot, buf.as_mut_ptr(), buf.len() as c_int), (a.client_port_version)(0, buf.as_mut_ptr(), 0)) };
+    n == 0 && buf[0] == 0 && none == NOT_PLAYER
+}
+
+/// `tsext_echo <text>` from a port client's extension (the stub client extension's
+/// `tsext_test_tsext`, `cargo xtask client-plugins`): answers on its `TSExt` channel `test` with
+/// the text and what `ext_message` and `client_port_version` said about the bot, a broadcast, a
+/// payload too long and a bad channel, and the client's version. Also sends on a channel nobody
+/// claimed, which the client must drop.
+fn tsext_echo(a: &PluginApi, player: c_int, text: &str) {
+    let max = engine().map_or(0, |(_, g)| g.maxClients);
+    let bot = (1..=max).find(|&i| info(i).is_some_and(|p| p.is_bot == 1));
+    let big = [0u8; ts_plugin_api::EXT_MESSAGE_MAX];
+    let mut ver = [0 as c_char; 32];
+    // SAFETY: NUL-terminated channels, payloads of the lengths given, a writable buffer.
+    let reply = unsafe {
+        let bot_rc = bot.map_or(0, |b| (a.ext_message)(b, c"test".as_ptr(), b"x".as_ptr(), 1, 0));
+        let all = (a.ext_message)(0, c"test".as_ptr(), b"broadcast".as_ptr(), 9, 0);
+        let too_long = (a.ext_message)(player, c"test".as_ptr(), big.as_ptr(), big.len() as c_int, 0);
+        let bad_channel = (a.ext_message)(player, c"no;way".as_ptr(), b"x".as_ptr(), 1, 0);
+        (a.ext_message)(player, c"nochan".as_ptr(), b"dropped".as_ptr(), 7, 0);
+        (a.client_port_version)(player, ver.as_mut_ptr(), ver.len() as c_int);
+        let ver = CStr::from_ptr(ver.as_ptr()).to_string_lossy().into_owned();
+        format!("echo:{text} bot={bot_rc} all={all} big={too_long} badch={bad_channel} ver={ver}")
+    };
+    // SAFETY: as above.
+    let rc = unsafe { (a.ext_message)(player, c"test".as_ptr(), reply.as_ptr(), reply.len() as c_int, 0) };
+    say(log::INFO, &format!("tsext_echo to #{player}: {reply} ({rc})"));
 }
 
 /// Creates an `info_target` from keys (as RCBot's `givetsweapon` makes a `ts_groundweapon`),
@@ -860,12 +930,20 @@ fn create_entity(a: &PluginApi) -> bool {
     }
 }
 
-unsafe extern "C" fn client_command(_player: c_int, argc: c_int, argv: *const *const c_char) -> c_int {
+unsafe extern "C" fn client_command(player: c_int, argc: c_int, argv: *const *const c_char) -> c_int {
     if argc < 1 || argv.is_null() {
         return 0;
     }
     // SAFETY: the server passes `argc` NUL-terminated strings for the call.
     let cmd = unsafe { CStr::from_ptr(*argv) };
+    if cmd == c"tsext_echo" {
+        // SAFETY: as above.
+        let text = if argc > 1 { unsafe { CStr::from_ptr(*argv.add(1)) }.to_string_lossy().into_owned() } else { String::new() };
+        if let Some(a) = api() {
+            tsext_echo(a, player, &text);
+        }
+        return 1;
+    }
     if cmd != c"tsmod_test_ping" {
         return 0;
     }
