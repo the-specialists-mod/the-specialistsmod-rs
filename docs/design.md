@@ -71,6 +71,9 @@ crates/
   plugin-api/    ts-plugin-api: the C ABI table server plugins get from CreateInterface (AMX Mod X
                  modules) or from the server's `tsmod_*` loader (bot backends; issue #104)
   tsmod-test/    the stub `tsmod_test` plugin (a test fixture: loader checks, a trivial bot backend)
+  plugin-pkg/    client plugin packages (.tspkg), manifests, signatures, approved.toml and per-file
+                 verification; no unsafe, no engine dependency, shared with tsmod-launcher
+                 (implementation/client-plugins.md §10)
   client/        ts-client: client game logic (rlib, no unsafe)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
 xtask/           build, dist, install, server tests
