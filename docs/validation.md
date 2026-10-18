@@ -87,7 +87,8 @@ cargo xtask version [<root>...]         # the port client's version check at con
 cargo xtask relaunch [--xvfb] [fwgs fwgs-win]  # restart and reconnect end to end, one root after the other (~5 min each, §2.r)
 cargo xtask tspkg [<root>...]           # server offers of client plugins (TSPkg, tspkg, op 5), the client's offer
                                           # flow (cards, downloads, update, op 5's card) and enforcement (blocks,
-                                          # match, unlisted), Linux roots one by one (§2.z2)
+                                          # match, unlisted), the plugins panel (revoke, unblock,
+                                          # delete), Linux roots one by one (§2.z2)
 cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
@@ -422,13 +423,28 @@ Enforcement (issue #302, client-plugins.md §13.2, §13.3), on port + 6, with th
    =0.3.0` for the loaded 0.2.0, and the kick after `sv_plugin_download_time` naming the plugin.
 10. 0.3.0 loads at the next start; a server offering only `quietother` with `[policy] unlisted =
     "suspend"` suspends `quietoffer` 0.3.0 as unlisted ("not allowed on this server"), and the
-    other offer is answered as usual.
+    other offer is answered as usual; its card is answered "Never from this server", and the
+    store then holds that block.
+
+The plugins panel (issue #311, client-plugins.md §8), on the same port with no offers: the script
+runs `cl_plugins_menu`, and the hook (`crates/client/src/plugins/menu/e2e.rs`) records each row as
+`kind=menu id=<id> buttons=<ops> answer=<op> files=<n> <summary>` and does the file's
+`menu:<id>=<op>` as the confirmation's click does (`kind=menu-done id=<id> <result>`):
+
+11. The panel lists the loaded `quietoffer` 0.3.0 with its 4 files and only "revoke" (no delete
+    while loaded), and the blocked, not installed `quietother` with only "unblock"; after revoking
+    and unblocking neither is in the store, `quietoffer` stays installed and loaded ("stays loaded
+    until the game exits"), and `cl_plugins_list` shows `quietoffer 0.3.0: not approved; loaded`.
+12. The test blocks `quietoffer` everywhere in the store (so the next start skips it without a
+    prompt); it doesn't load, the panel offers "unblock" and "delete", and deleting removes
+    `cl_plugins/quietoffer/` and keeps the block.
 
 Run under a private X server when there's no desktop (`DISPLAY=:90 SDL_VIDEODRIVER=x11`, no
 `WAYLAND_DISPLAY`). Client logs go to `target/version-client-<root>-tspkg-*.log`. Not in `all`:
 run it after changes to `plugin_offers`, `shared::protocol::tspkg`, `ts_client::plugins` or the
-connect path. Not covered: a real mouse click on the cards (the hook answers them without drawing;
-#318), downloads over HTTPS, and Windows clients.
+connect path. Not covered: a real mouse click on the cards and the panel (the hook answers them
+without drawing; #318), the panel's drawing and paging in game, downloads over HTTPS, and Windows
+clients.
 
 **FWGS servers drop user messages to clients that aren't spawned** (`SV_Multicast`), so the
 server sends op 5 and the offers at the player's first `PlayerPostThink` after

@@ -87,7 +87,8 @@ crates/
                  plugins at start, asks about new or changed ones and is the extension loader's
                  approval gate (implementation/client-plugins.md §5, §7.1); `plugins::offers`
                  handles a server's offers: in-game cards, downloads on worker threads (ureq,
-                 rustls), install and late loading (§6.3, §7.2)
+                 rustls), install and late loading (§6.3, §7.2); `plugins::menu` is the
+                 `cl_plugins_menu` panel (revoke, unblock, delete, every file's hash; §8)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll; also loads
                  the client extensions (ext.rs; the logic is ts-client's `ext`)
 xtask/           build, dist, install, server tests

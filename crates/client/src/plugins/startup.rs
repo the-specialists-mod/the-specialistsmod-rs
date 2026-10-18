@@ -67,6 +67,26 @@ pub struct Item {
     /// The library to map, when there is one for this platform.
     pub library: Option<PathBuf>,
     pub decision: Decision,
+    /// What verification found, for the plugins panel (`super::menu`).
+    pub found: Found,
+}
+
+/// What verifying a candidate found on disk: its name, version and every file's hash (the
+/// plugins panel shows them, §8).
+#[derive(Clone, Debug, Default)]
+pub struct Found {
+    /// The manifest's name, or a hand-installed library's file name.
+    pub name: String,
+    pub version: Option<Version>,
+    /// Every file and its SHA-256, relative to the package directory (or `cl_dlls/`).
+    pub files: BTreeMap<String, plugin_pkg::Sha256>,
+}
+
+impl Found {
+    pub fn of(v: &Verification) -> Found {
+        let file = || v.library.as_ref().and_then(|l| l.file_name()).map_or_else(|| v.id.clone(), |f| f.to_string_lossy().into_owned());
+        Found { name: v.manifest.as_ref().map_or_else(file, |m| m.name.clone()), version: v.version.clone(), files: v.files.clone() }
+    }
 }
 
 /// The result of [`run`].
@@ -268,6 +288,7 @@ pub fn run(
         .map(|((candidate, v), d)| Item {
             name: candidate_name(&candidate),
             library: v.library.clone(),
+            found: Found::of(&v),
             candidate,
             decision: d.unwrap_or_else(|| Decision::Skip("not decided".into())),
         })

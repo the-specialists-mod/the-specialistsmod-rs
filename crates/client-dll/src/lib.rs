@@ -85,12 +85,12 @@ pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
     spectator::redraw();
     // The voice panels paint with the viewport's (`menus`), in VGUI1's child order.
     menus::redraw(time);
-    // Port addition: an open offer card (client-plugins.md §7.3) is drawn last, and while it's up
-    // the extensions get no redraw, so nothing covers it.
-    if !ts_client::plugins::offers::covers() {
+    // Port addition: an open offer card or the plugins panel (client-plugins.md §7.3, §8) is drawn
+    // last, and while one is up the extensions get no redraw, so nothing covers it.
+    if !ts_client::plugins::covers() {
         ts_client::ext::redraw(time, intermission != 0);
     }
-    ts_client::plugins::offers::redraw();
+    ts_client::plugins::redraw();
     1
 }
 
@@ -369,8 +369,9 @@ pub unsafe extern "C" fn HUD_Key_Event(down: c_int, key: c_int, binding: *const 
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.
     let binding = unsafe { goldsrc::util::cstr(binding) };
     // Port addition: an open offer card takes Escape and Enter ("Not now", never an approval)
-    // before anything else, extensions included (client-plugins.md §7.3).
-    if ts_client::plugins::offers::key_event(down != 0, key) {
+    // before anything else, extensions included (client-plugins.md §7.3); the plugins panel takes
+    // Escape (close) and its paging keys.
+    if ts_client::plugins::key_event(down != 0, key) {
         return 0;
     }
     // Port addition: client extensions see the key first, and may swallow it (issue #293).

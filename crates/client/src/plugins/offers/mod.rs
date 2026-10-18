@@ -376,7 +376,9 @@ pub fn frame() {
             Done::Install { key, result } => install_done(key, result),
         }
     }
-    if with(|o| o.open.is_none()) {
+    // The plugins panel holds the screen: queued cards wait until it closes, so none appears
+    // under a click meant for the panel.
+    if with(|o| o.open.is_none()) && !super::menu::is_open() {
         next_card();
     }
 }
@@ -575,9 +577,9 @@ fn refuse(key: u32, o: &Offer) {
 
 fn save_store(s: &super::State) {
     if s.store_writable
-        && let Err(e) = s.store.save(&s.dirs.store())
+        && let Err(e) = super::save_store(s)
     {
-        super::say(&format!("can't save {} ({e})", s.dirs.store().display()));
+        super::say(&e);
     }
 }
 
@@ -676,6 +678,7 @@ fn approve(
         candidate: plugin_pkg::Candidate::Package { dir: base },
         name: id.clone(),
         library: Some(library.clone()),
+        found: super::startup::Found::of(&v),
         decision: Decision::Allowed { v: Box::new(v), fresh: true },
     });
     s.by_library = super::startup::by_library(&s.items);
@@ -745,11 +748,13 @@ pub fn wants_cursor() -> bool {
     covers()
 }
 
-fn measure(s: &str) -> i32 {
+/// A string's width in the console font.
+pub(crate) fn measure(s: &str) -> i32 {
     engine().console_string_size(s).0
 }
 
-fn line_height() -> i32 {
+/// A card's line height.
+pub(crate) fn line_height() -> i32 {
     engine().console_string_size("Ay").1.max(12) + 4
 }
 
@@ -769,8 +774,15 @@ pub fn redraw() {
     else {
         return;
     };
-    let e = engine();
     let l = layout_of(&c);
+    draw_card(&l, &c.buttons, armed, remaining, shift);
+    draw_cursor();
+}
+
+/// Paints a laid-out card: the panel, its lines and its buttons (an approving one greyed with its
+/// countdown until `armed`). The plugins panel (`crate::plugins::menu`) paints with it too.
+pub(crate) fn draw_card<A: card::Act>(l: &card::Layout, buttons: &[card::Button<A>], armed: bool, remaining: u64, shift: bool) {
+    let e = engine();
     let p = l.panel;
     e.fill_blend(p.x - 2, p.y - 2, p.w + 4, p.h + 4, [200, 160, 60], 255);
     e.fill_blend(p.x, p.y, p.w, p.h, [16, 18, 24], 245);
@@ -784,7 +796,7 @@ pub fn redraw() {
         e.draw_console_string(*x, *y, rgb, text);
     }
     let (cx, cy) = crate::input::cursor();
-    for (b, r) in c.buttons.iter().zip(&l.buttons) {
+    for (b, r) in buttons.iter().zip(&l.buttons) {
         let (label, action) = b.current(shift);
         let enabled = !action.approves() || armed;
         let hover = r.contains(cx, cy) && enabled;
@@ -797,10 +809,17 @@ pub fn redraw() {
         };
         e.fill_blend(r.x, r.y, r.w, r.h, bg, 255);
         let text = if enabled { label.to_owned() } else { format!("{label} ({remaining})") };
+        let text = if b.wide { card::fit_text(&text, r.w - 2 * card::PAD, &measure) } else { text };
         let rgb = if enabled { [1.0, 1.0, 1.0] } else { [0.5, 0.5, 0.5] };
         let ty = r.y + (r.h - line_height()) / 2 + 2;
         e.draw_console_string(r.x + card::PAD, ty, rgb, &text);
     }
+}
+
+/// The virtual cursor, over a card.
+pub(crate) fn draw_cursor() {
+    let e = engine();
+    let (cx, cy) = crate::input::cursor();
     e.fill_blend(cx - 1, cy - 6, 3, 13, [255, 255, 255], 255);
     e.fill_blend(cx - 6, cy - 1, 13, 3, [255, 255, 255], 255);
 }

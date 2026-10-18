@@ -35,7 +35,19 @@
 //!    "Install update"), `restart` and one restart card (answered "Later"), op 3 `require =0.3.0`,
 //!    and the kick once the download time is over, because 0.2.0 is still loaded.
 //! 10. **Unlisted.** `[policy] unlisted = "suspend"` and only another plugin offered: the loaded
-//!     `quietoffer` 0.3.0 is suspended as unlisted.
+//!     `quietoffer` 0.3.0 is suspended as unlisted. The other offer's card is answered "Never
+//!     from this server", which 11 unblocks.
+//!
+//! The plugins panel (issue #311, client-plugins.md §8), opened with `cl_plugins_menu` and
+//! answered by the same hook (`crates/client/src/plugins/menu/e2e.rs`):
+//!
+//! 11. **Revoke and unblock.** The panel lists the loaded `quietoffer` 0.3.0 (revoke only: no
+//!     delete while loaded) and the blocked, not installed `quietother` (unblock only); revoking
+//!     and unblocking leave neither in the store, `quietoffer` stays loaded and installed, and
+//!     `cl_plugins_list` says it's no longer approved.
+//! 12. **Delete.** With `quietoffer` blocked everywhere (so the next start skips it without a
+//!     prompt), the panel offers unblock and delete; deleting removes `cl_plugins/quietoffer/`
+//!     and keeps the block.
 
 use crate::Ctx;
 use crate::roots::Root;
@@ -460,7 +472,7 @@ impl Ctx {
 }
 
 impl Ctx {
-    /// Scenarios 7 to 10 (module docs) on `port`, after 6 left `quietoffer` 0.2.0 approved and
+    /// Scenarios 7 to 12 (module docs) on `port`, after 6 left `quietoffer` 0.2.0 approved and
     /// its package in `plugins/`.
     #[allow(clippy::too_many_arguments)] // one scenario group's context, which tspkg_client holds
     fn tspkg_enforce(
@@ -475,6 +487,8 @@ impl Ctx {
         env: &[(&str, String)],
     ) -> Vec<(String, bool)> {
         let gamedir = root.path.join("ts");
+        let client_dir = fwgs.path.join("ts");
+        let store = || Store::load(&plugin_pkg::store_path(&client_dir.join("cl_plugins"))).map(|(s, _)| s).unwrap_or_default();
         let shown_path = PathBuf::from(format!("{}.shown", cards.display()));
         let begin = |answers: &str| {
             fs::write(cards, answers).unwrap();
@@ -576,7 +590,7 @@ impl Ctx {
         // 10: `[policy] unlisted = "suspend"`, another plugin offered.
         let other = package(self, &gamedir, stub, OTHER, "0.1.0", true).unwrap_or_default();
         fs::write(gamedir.join("plugin_offers.toml"), format!("{other}\n[policy]\nunlisted = \"suspend\"\n")).unwrap();
-        begin("");
+        begin(&format!("offer:{OTHER}=never\n"));
         crate::say!("== {}: an unlisted plugin suspended (port {port})", root.name);
         if let Some(server) = self.version_server(root, port, &quick) {
             let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-unlisted", &w.repeat(2), env);
@@ -588,9 +602,79 @@ impl Ctx {
                 client.contains("quiet stub suspended: not allowed on this server") && log.contains(&format!(": {OFFER} 0.3.0 suspended")),
             ));
             c.push(("10: the other offer is answered as usual".into(), log.contains(&format!(": {OTHER} 0.1.0 denied"))));
+            c.push((
+                "10: its \"Never from this server\" is in the store".into(),
+                store().entries_for(OTHER).any(|e| e.state == plugin_pkg::State::Blocked && e.scope == plugin_pkg::Scope::Server),
+            ));
             c.push(("10: no kick".into(), !log.contains("kicking")));
         } else {
             c.push(("10: the server answered".into(), false));
+        }
+
+        // 11: the panel revokes the loaded plugin and unblocks the other.
+        let _ = fs::remove_file(gamedir.join("plugin_offers.toml"));
+        let approval = store().entries_for(OFFER).next().cloned();
+        begin(&format!("menu:{OFFER}=revoke\nmenu:{OTHER}=unblock\n"));
+        crate::say!("== {}: the plugins panel: revoke and unblock (port {port})", root.name);
+        let panel = format!("{w}{w}cl_plugins_menu\n{w}cl_plugins_list\n{w}");
+        if let Some(server) = self.version_server(root, port, dev) {
+            let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-menu-revoke", &panel, env);
+            let log = self.version_server_stop(root, server);
+            let s = shown();
+            c.push((
+                "11: the panel lists the loaded plugin with its files, revoke only".into(),
+                s.contains(&format!("kind=menu id={OFFER} buttons=revoke answer=revoke files=4")) && s.contains("allowed; loaded"),
+            ));
+            c.push((
+                "11: and the blocked one, not installed, unblock only".into(),
+                s.contains(&format!("kind=menu id={OTHER} buttons=unblock answer=unblock files=0")) && s.contains("not installed"),
+            ));
+            c.push((
+                "11: revoked (it stays loaded) and unblocked".into(),
+                s.contains(&format!("kind=menu-done id={OFFER} revoked"))
+                    && s.contains("stays loaded until the game exits")
+                    && s.contains(&format!("kind=menu-done id={OTHER} unblocked")),
+            ));
+            let st_ = store();
+            c.push(("11: neither is in the store".into(), st_.entries_for(OFFER).count() == 0 && st_.entries_for(OTHER).count() == 0));
+            c.push((
+                "11: still loaded and installed; cl_plugins_list says it's not approved".into(),
+                client_dir.join("cl_plugins").join(OFFER).join("0.3.0").join("manifest.toml").is_file()
+                    && client.contains(&format!("{OFFER} 0.3.0: not approved; loaded")),
+            ));
+            c.push(("11: no panic".into(), !client.contains("PANIC") && !log.contains("PANIC")));
+        } else {
+            c.push(("11: the server answered".into(), false));
+        }
+
+        // 12: blocked everywhere (no start-up prompt), then deleted from the panel.
+        if let Some(mut e) = approval {
+            let mut st_ = store();
+            e.servers.clear();
+            st_.block(e);
+            let _ = st_.save(&plugin_pkg::store_path(&client_dir.join("cl_plugins")));
+        }
+        begin(&format!("menu:{OFFER}=delete\n"));
+        crate::say!("== {}: the plugins panel: delete (port {port})", root.name);
+        if let Some(server) = self.version_server(root, port, dev) {
+            let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-menu-delete", &panel, env);
+            let log = self.version_server_stop(root, server);
+            let s = shown();
+            c.push(("12: the blocked plugin didn't load".into(), !client.contains(&format!("loaded tsmod_{OFFER}"))));
+            c.push((
+                "12: the panel offers unblock and delete".into(),
+                s.contains(&format!("kind=menu id={OFFER} buttons=unblock|delete answer=delete files=4")),
+            ));
+            c.push((
+                "12: deleted, its directory gone, the block kept".into(),
+                s.contains(&format!("kind=menu-done id={OFFER} deleted"))
+                    && !client_dir.join("cl_plugins").join(OFFER).exists()
+                    && store().entries_for(OFFER).all(|e| e.state == plugin_pkg::State::Blocked)
+                    && store().entries_for(OFFER).count() == 1,
+            ));
+            c.push(("12: no panic".into(), !client.contains("PANIC") && !log.contains("PANIC")));
+        } else {
+            c.push(("12: the server answered".into(), false));
         }
         c
     }

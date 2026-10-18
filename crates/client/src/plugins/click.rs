@@ -1,6 +1,7 @@
 //! The click-only safeguards every approval shares (client-plugins.md §7.3): the start-up box
-//! ([`super::prompt`]), the in-game offer and update cards ([`super::offers`]) and restart and
-//! reconnect's cards (`crate::relaunch::card`, the same delay).
+//! ([`super::prompt`]), the in-game offer and update cards ([`super::offers`]), the plugins
+//! panel's confirmations ([`super::menu`]) and restart and reconnect's cards
+//! (`crate::relaunch::card`, the same delay).
 //!
 //! * An approving button counts only once its dialog has been up for [`ARM_DELAY`], and the
 //!   delay starts again whenever the dialog changes, so a click aimed at something else can't
