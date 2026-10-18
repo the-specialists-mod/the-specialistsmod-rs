@@ -151,6 +151,7 @@ pub struct PlayerRules {
 pub fn game_init() {
     cvars::register();
     commands::register_server_commands();
+    crate::plugin_offers::register_server_commands();
     engine().server_command("exec skill.cfg\n");
 }
 
@@ -175,6 +176,8 @@ pub fn install() {
     crate::gameplay::map_start();
     // Port addition: what a reload asked for is what this map runs (or a map start set it back).
     crate::reload::map_start();
+    // Port addition: `plugin_offers.toml`, read and checked for the map (issue #298).
+    crate::plugin_offers::map_start();
 }
 
 /// The rules of a new game: the rules decided and built, and `CTSGameRules::Init`'s node graph
@@ -227,6 +230,8 @@ pub fn start_frame() {
         crate::reload::frame();
     }
     frame::think();
+    // Port addition: the op 5 kicks (`plugin_offers`).
+    crate::plugin_offers::start_frame();
 }
 
 /// "The Specialists v<version>", then ` (<mode>)` if given, as a `&'static CStr` constant. The
@@ -304,18 +309,26 @@ pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> Result<(), C
     if let Some(reason) = crate::gameplay::refuse_client(e) {
         return Err(reason.into());
     }
-    if let Some(reason) = check_client_version(e, name) {
-        return Err(reason.into());
-    }
+    let notice = match check_client_version(e, name) {
+        client_version::Verdict::Admit => None,
+        client_version::Verdict::Refuse(reason) => return Err(reason.into()),
+        client_version::Verdict::Notify { requirement, reason } => {
+            let url = client_version::notice_url(&cvars::s(client_version::CVAR_URL));
+            Some(crate::plugin_offers::clients::PortNotice { requirement, url, reason, kick_at: None })
+        }
+    };
     if !lifecycle::client_connect(e, name, addr) {
         return Err("Connection rejected by game".into());
     }
+    // Port addition: offers of client plugins and op 5 (`plugin_offers`, issue #298).
+    crate::plugin_offers::client_connect(e, notice);
     crate::plugins::client_connect(e);
     Ok(())
 }
-/// The port client's version check (`client_version::check`) with the server's cvars; logs a
-/// refusal, and a `sv_client_version` it can't read (which then admits every version).
-fn check_client_version(e: *mut edict_t, name: &CStr) -> Option<String> {
+/// The port client's version check (`client_version::decide`) with the server's cvars; logs a
+/// refusal, a client let in to be told by op 5, and a `sv_client_version` it can't read (which
+/// then admits every version).
+fn check_client_version(e: *mut edict_t, name: &CStr) -> client_version::Verdict {
     use client_version as cv;
     let eng = engine();
     let policy = cv::Policy::parse(&cvars::s(cv::CVAR_VERSION)).unwrap_or_else(|bad| {
@@ -327,15 +340,21 @@ fn check_client_version(e: *mut edict_t, name: &CStr) -> Option<String> {
     let settings = cv::Settings { policy, require_port: cvars::on(cv::CVAR_REQUIRE_PORT), url: cvars::s(cv::CVAR_URL) };
     let server = shared::protocol::port::version_numbers();
     crate::gameplay::with_connecting_client(e, |client| {
-        let reason = cv::check(&settings, server, client)?;
-        eng.print(&format!("[ts] version: refused {} ({client:?}): {reason}\n", name.to_string_lossy()));
-        Some(reason)
+        let verdict = cv::decide(&settings, server, client, crate::plugin_offers::version_hooks_tspkg);
+        match &verdict {
+            cv::Verdict::Admit => {}
+            cv::Verdict::Refuse(reason) => eng.print(&format!("[ts] version: refused {} ({client:?}): {reason}\n", name.to_string_lossy())),
+            cv::Verdict::Notify { reason, .. } => eng
+                .print(&format!("[ts] version: let in {} ({client:?}) to tell it by TSPkg, then kick: {reason}\n", name.to_string_lossy())),
+        }
+        verdict
     })
 }
 
 /// `ClientDisconnect`: plugins hear of it first, while the client is still a player.
 pub fn client_disconnect(e: *mut edict_t) {
     crate::plugins::client_disconnect(e);
+    crate::plugin_offers::client_disconnect(e);
     crate::bot_backend::client_disconnect(e);
     lifecycle::client_disconnect(e)
 }

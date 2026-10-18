@@ -8,3 +8,5 @@ publish = false
 [dependencies]
 # The `tsmod_*` library suffixes (`library_suffix`), for the plugin fixtures.
 ts-plugin-api = { path = "../crates/plugin-api" }
+# `plugin-offer` and the `tspkg` e2e's stub package.
+plugin-pkg = { path = "../crates/plugin-pkg" }

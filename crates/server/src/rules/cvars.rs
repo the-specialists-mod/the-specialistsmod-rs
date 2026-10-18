@@ -12,7 +12,7 @@ const SERVER: i32 = 0x4; // FCVAR_SERVER
 const UNLOGGED: i32 = 0x100; // FCVAR_UNLOGGED
 
 /// (name, default, flags), in TS registration order. All of these are registered by TS's
-/// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and the port's (`ts_bot_*`, `sv_client_*`).
+/// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and the port's (`ts_bot_*`, `sv_client_*`, `sv_plugin_*`, `ts_dev_tspkg`).
 /// The port's `ts_pm_arith` is registered after them ([`pm_arith`]).
 pub const CVARS: &[(&str, &str, i32)] = &[
     ("displaysoundlist", "0", 0),
@@ -67,6 +67,11 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     ("sv_client_version", "any", SERVER),
     ("sv_client_require_port", "0", SERVER),
     ("sv_client_version_url", "", 0),
+    // Port additions: client plugin offers (`plugin_offers`, issue #298).
+    ("sv_plugin_required_kick", "0", 0),
+    ("sv_plugin_check_time", "15", 0),
+    // Port dev aid (sv_cheats 1): every port client counts as hooking TSPkg.
+    ("ts_dev_tspkg", "0", 0),
 ];
 
 /// TS defines these `cvar_t`s but never registers them, so they're constants (architecture.md

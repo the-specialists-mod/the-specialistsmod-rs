@@ -27,6 +27,17 @@ pub const USERINFO_KEY_C: &std::ffi::CStr = c"_tsrs";
 /// The `SrvSett` keys that carry the server's version: major, minor, patch.
 pub const SRVSETT_VERSION_KEYS: [u8; 3] = [5, 6, 7];
 
+/// The first port client version that hooks `TSPkg` ([`super::tspkg`]): the release after
+/// 3.0.8, the first with the hook. The server sends `TSPkg` only to clients whose `_tsrs` version
+/// is at least this (`docs/implementation/client-plugins.md` §12): an older port client carries
+/// `_tsrs` but doesn't hook the message, and a GoldSrc client can fail on one it hasn't hooked.
+pub const TSPKG_SINCE: [i16; 3] = [3, 0, 9];
+
+/// Whether a client at `version` hooks `TSPkg`.
+pub fn hooks_tspkg(version: [i16; 3]) -> bool {
+    version >= TSPKG_SINCE
+}
+
 /// `major.minor.patch` as three numbers, each fitting `SrvSett`'s `short`; anything after the
 /// patch number (`-rc1`, `+dirty`) is dropped. `None` if it isn't such a version.
 pub fn parse_version(v: &str) -> Option<[i16; 3]> {
@@ -117,6 +128,13 @@ mod tests {
             numeric_version(version_numbers()).and_then(|f| parse_userinfo_version(&(f as i32).to_string())),
             Some(version_numbers())
         );
+    }
+
+    #[test]
+    fn tspkg_since() {
+        assert!(!hooks_tspkg([3, 0, 8]), "3.0.8 shipped without the hook");
+        assert!(hooks_tspkg([3, 0, 9]) && hooks_tspkg([3, 1, 0]) && hooks_tspkg([4, 0, 0]));
+        assert!(!hooks_tspkg([2, 9, 99]));
     }
 
     #[test]

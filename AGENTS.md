@@ -124,6 +124,13 @@ cargo xtask version [<root>...]           # the port client's version check at c
                                           # sv_client_require_port) on each Linux root's dedicated server: the
                                           # FWGS port client refused and admitted, the original client refused
                                           # (~1.5 min per root, not in all)
+cargo xtask tspkg [<root>...]             # server offers of client plugins on each Linux root's dedicated server:
+                                          # plugin_offers.toml and the package checks, TSPkg to the FWGS port client,
+                                          # tspkg replies, the required-offer kick, op 5; nothing to clients that
+                                          # don't hook TSPkg (not in all)
+cargo xtask plugin-offer [--required] <tspkg>
+                                          # check a built package, write its .manifest.toml/.sig/.cert siblings,
+                                          # print its plugin_offers.toml entry
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask steam [listen|<server-root>]  # the Steam HL25 client (Half-Life/ts): play's scenes + changelevel + the
                                           # Steam-only regressions on a listen server (~7 min), or joining
@@ -173,6 +180,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_as <player#> <command> ...` runs a client command as another player (e.g. a bot's `ts_give`).
 - `ts_dev_hamlog 1` logs the plugin entity hooks (Spawn, TakeDamage, Killed) as `[ts ham]` lines
   (`docs/implementation/plugin-api.md` §7).
+- `ts_dev_tspkg 1` (server) counts every port client as hooking `TSPkg`: builds between releases
+  report the last release's version, below `TSPKG_SINCE` (docs/implementation/client-plugins.md §12).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

@@ -652,8 +652,12 @@ name = "ts-server"
 version = "3.0.8"
 dependencies = [
  "goldsrc",
+ "plugin-pkg",
  "semver",
+ "serde",
  "shared",
+ "tempfile",
+ "toml",
  "ts-gameplay",
  "ts-plugin-api",
  "ts30-gameplay",
@@ -798,6 +802,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 name = "xtask"
 version = "3.0.8"
 dependencies = [
+ "plugin-pkg",
  "ts-plugin-api",
 ]
 

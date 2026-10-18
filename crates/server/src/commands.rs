@@ -144,6 +144,10 @@ pub fn run(e: *mut edict_t, args: &Args) {
     if crate::plugins::client_command(e, args) {
         return;
     }
+    // Port addition: the client's `tspkg` answers to plugin offers (issue #298).
+    if crate::plugin_offers::client_command(e, args) {
+        return;
+    }
     let cmd = args.str(0);
     let handled = world::dispatch(e, |ent, cx| {
         let Some(p) = (ent as &mut dyn std::any::Any).downcast_mut::<Player>() else { return false };

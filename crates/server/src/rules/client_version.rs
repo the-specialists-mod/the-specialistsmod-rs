@@ -119,6 +119,50 @@ pub struct Settings {
     pub url: String,
 }
 
+/// What `ClientConnect` does with a client after the version check ([`decide`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Admit,
+    /// Refused with this reason.
+    Refuse(String),
+    /// A port client that hooks `TSPkg` (§13.1): let in, sent op 5 with `requirement` (the tag's
+    /// requirement), and kicked with `reason` after `sv_plugin_check_time` unless it leaves.
+    Notify {
+        requirement: String,
+        reason: String,
+    },
+}
+
+/// [`check`], except that a mismatching port client for which `hooks_tspkg` holds is let in and
+/// notified instead (`plugin_offers`). Clients whose version can't be read are refused as before:
+/// nothing says they hook `TSPkg`.
+pub fn decide(s: &Settings, server: [i16; 3], client: ConnectingClient, hooks_tspkg: impl Fn([i16; 3]) -> bool) -> Verdict {
+    let Some(reason) = check(s, server, client) else { return Verdict::Admit };
+    let requirement = s.policy.tag(server);
+    match client {
+        ConnectingClient::Port(v)
+            if port::parse_userinfo_version(v).is_some_and(hooks_tspkg)
+                && requirement.len() <= shared::protocol::tspkg::MAX_REQUIREMENT =>
+        {
+            Verdict::Notify { requirement, reason }
+        }
+        _ => Verdict::Refuse(reason),
+    }
+}
+
+/// The URL op 5 carries: `sv_client_version_url`, or [`DEFAULT_URL`].
+pub fn notice_url(url: &str) -> String {
+    let url = clean(url.trim());
+    let url = url.trim();
+    if url.is_empty() || url.len() > shared::protocol::tspkg::MAX_URL { DEFAULT_URL.to_owned() } else { url.to_owned() }
+}
+
+/// A reason for a `kick` command: cleaned like a refusal (no `;`, quotes or control characters)
+/// and cut to [`REASON_MAX`] bytes at a character boundary.
+pub fn clean_reason(reason: &str) -> String {
+    cut(&clean(reason), REASON_MAX).trim_end().to_owned()
+}
+
 /// `ClientConnect`'s version check: `None` lets `client` in, `Some(reason)` refuses it with a
 /// reason that fits the engines' reject buffer. Bots and HLTV are never checked.
 pub fn check(s: &Settings, server: [i16; 3], client: ConnectingClient) -> Option<String> {
@@ -280,6 +324,30 @@ mod tests {
         // A multi-byte URL is cut at a character boundary.
         let wide = r("exact", Have::Version([3, 0, 7]), &"é".repeat(80));
         assert!(wide.len() <= REASON_MAX && wide.ends_with(" [tsrs:=3.0.8]"), "{wide}");
+    }
+
+    #[test]
+    fn tspkg_clients_are_notified() {
+        let exact = settings("exact", false);
+        let hooks = port::hooks_tspkg;
+        assert_eq!(decide(&exact, SERVER, Port("3.0.8"), hooks), Verdict::Admit);
+        // 3.0.7 doesn't hook TSPkg: refused at connect, as before.
+        assert!(matches!(decide(&exact, SERVER, Port("3.0.7"), hooks), Verdict::Refuse(_)));
+        let Verdict::Notify { requirement, reason } = decide(&exact, SERVER, Port("3.0.9"), hooks) else { panic!() };
+        assert_eq!(requirement, "=3.0.8");
+        assert!(reason.contains("(yours: 3.0.9)") && reason.ends_with("[tsrs:=3.0.8]"), "{reason}");
+        assert!(matches!(decide(&exact, SERVER, Port("3009000"), hooks), Verdict::Notify { .. }), "the numeric form");
+        // Unknown versions and TS 3.0's client are refused whatever hooks_tspkg says.
+        assert!(matches!(decide(&exact, SERVER, Port("junk"), |_| true), Verdict::Refuse(_)));
+        assert!(matches!(decide(&settings("any", true), SERVER, Other, |_| true), Verdict::Refuse(_)));
+        assert_eq!(decide(&exact, SERVER, Bot, |_| true), Verdict::Admit);
+        // A requirement too long for op 5 refuses at connect instead.
+        let huge = (0..30).map(|i| format!(">=1.{i}.0")).collect::<Vec<_>>().join(", ");
+        assert!(matches!(decide(&settings(&huge, false), SERVER, Port("0.9.0"), |_| true), Verdict::Refuse(_)));
+        assert_eq!(notice_url(""), DEFAULT_URL);
+        assert_eq!(notice_url(" https://x.org/get;quit "), "https://x.org/get quit");
+        assert_eq!(clean_reason("a;b\"c\nd"), "a b c d");
+        assert!(clean_reason(&"é".repeat(100)).len() <= REASON_MAX);
     }
 
     #[test]

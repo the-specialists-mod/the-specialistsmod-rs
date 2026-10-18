@@ -25,7 +25,7 @@ const CLIENT_CFG: &str = "xtask_version_client.cfg";
 /// A requirement no build meets.
 const UNMET: &str = ">=99.0.0";
 
-fn server_cfg(settings: &str) -> String {
+pub(crate) fn server_cfg(settings: &str) -> String {
     format!(
         "// Written by cargo xtask version.\n{EXEC_SERVER_CFG}developer 1\nmp_timelimit 0\nmp_fraglimit 0\nts_bot_quota 0\n{settings}\n"
     )
@@ -117,7 +117,7 @@ impl Ctx {
     }
 
     /// Starts `root`'s dedicated server in TS 3.0 mode with `settings`; returns once it answers.
-    fn version_server(&self, root: &Root, port: u16, settings: &str) -> Option<Child> {
+    pub(crate) fn version_server(&self, root: &Root, port: u16, settings: &str) -> Option<Child> {
         fs::write(root.path.join("ts").join(SERVER_CFG), server_cfg(settings)).unwrap();
         let _ = fs::remove_file(root.log_path());
         let mut cmd = root.server_command_with("ts_dojo", port, SERVER_CFG, 0);
@@ -138,7 +138,7 @@ impl Ctx {
         None
     }
 
-    fn version_server_stop(&self, root: &Root, mut child: Child) -> String {
+    pub(crate) fn version_server_stop(&self, root: &Root, mut child: Child) -> String {
         let _ = child.kill();
         let _ = child.wait();
         let _ = fs::remove_file(root.path.join("ts").join(SERVER_CFG));
@@ -148,9 +148,15 @@ impl Ctx {
 
     /// The port's client (`fwgs`) connects to `root`'s server, waits, and quits; returns its log.
     fn version_fwgs_client(&self, root: &Root, fwgs: &Root, port: u16, label: &str) -> String {
+        self.fwgs_client_script(root, fwgs, port, label, "")
+    }
+
+    /// [`Self::version_fwgs_client`], running `middle` (console lines) halfway through the wait.
+    pub(crate) fn fwgs_client_script(&self, root: &Root, fwgs: &Root, port: u16, label: &str, middle: &str) -> String {
         let w = "wait;".repeat(20);
         let proto = if root.engine == Engine::Fwgs { "" } else { " gs" };
-        let cfg = format!("connect 127.0.0.1:{port}{proto}\n{}echo XTASK: done\nquit\n", format!("{w}\n").repeat(40));
+        let half = format!("{w}\n").repeat(20);
+        let cfg = format!("connect 127.0.0.1:{port}{proto}\n{half}{middle}{half}echo XTASK: done\nquit\n");
         let gamedir = fwgs.path.join("ts");
         fs::write(gamedir.join(CLIENT_CFG), cfg).unwrap();
         let log_path = self.repo.join("target").join(format!("version-client-{}-{label}.log", root.name));
@@ -175,7 +181,7 @@ impl Ctx {
 
     /// The original TS 3.0 client (FWGS 0.21 win32 with TS's `client.dll`, under Wine) connects
     /// with the GoldSrc protocol; returns its engine log (the root's own log is left as it was).
-    fn version_orig_client(&self, root: &Root, orig: &Path, port: u16) -> String {
+    pub(crate) fn version_orig_client(&self, root: &Root, orig: &Path, port: u16) -> String {
         let w = "wait;".repeat(20);
         let cfg_path = orig.join("ts").join(CLIENT_CFG);
         fs::write(&cfg_path, format!("connect 127.0.0.1:{port} gs\n{}quit\n", format!("{w}\n").repeat(30))).unwrap();

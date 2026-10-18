@@ -24,6 +24,7 @@ pub mod net;
 pub mod pdata;
 pub mod player;
 pub mod plugin_api;
+pub mod plugin_offers;
 pub mod plugins;
 pub mod precache;
 pub mod reload;

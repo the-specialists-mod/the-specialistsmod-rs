@@ -293,6 +293,8 @@ pub fn client_put_in_server(e: *mut edict_t) {
     with_player(e, |p, _| p.impulse.custom_decal_frames = impulse::custom_decal_frames(-1));
     crate::ham::spawn(e);
     let bot = goldsrc::edict::EdictPtr::v(e).flags & FL_FAKECLIENT as i32 != 0;
+    // Port addition: op 5 and the offers of client plugins (`plugin_offers`, issue #298).
+    crate::plugin_offers::client_put_in_server(e);
     crate::plugins::client_put_in_server(e, bot);
 }
 
