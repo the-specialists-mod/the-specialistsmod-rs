@@ -267,6 +267,10 @@ impl Ctx {
         }
         let data = gamedir.join("cl_plugins_data");
         let _ = fs::remove_dir_all(data.join("test"));
+        // The MOTD the script's `motd` asks for (the takeover checks): `script_start` points
+        // `motdfile` at a file that doesn't exist, so the script switches to this one meanwhile.
+        let motd = gamedir.join(MOTD_FILE);
+        let _ = fs::write(&motd, "tsext MOTD for the client extension takeover checks\n");
         let run = self.run_script_env(
             root,
             "client_plugins",
@@ -285,6 +289,7 @@ impl Ctx {
         let pkg_spawned = fs::read_to_string(data.join("quietpkg/spawned.txt")).unwrap_or_default();
         let prompts = fs::read_to_string(gamedir.join(PROMPT_LOG)).unwrap_or_default();
         let store = Store::load(&store_path(&gamedir)).map(|(s, _)| s).unwrap_or_default();
+        let _ = fs::remove_file(&motd);
         remove_fixtures(&cl_dlls);
         remove_plugin_fixtures(&gamedir);
         crate::plugins::remove_fixtures(&dlls);
@@ -304,6 +309,9 @@ impl Ctx {
     }
 }
 
+/// The MOTD file the script's `motd` sends (in the game directory, for the run only).
+const MOTD_FILE: &str = "xtask_cp_motd.txt";
+
 /// The listen-server script (see the module docs).
 fn script() -> String {
     let mut cfg = crate::script_start("ts_dojo") + &crate::script_join_and_spawn();
@@ -312,7 +320,7 @@ fn script() -> String {
     cfg += &format!("+use\nwait;wait;wait\n-use\n{}", secs(0.5));
     cfg += &format!("+attack\nwait;wait;wait\n-attack\n{}", secs(0.5));
     // Minor 2 (#306): a finished duck sets `local::DUCKING`.
-    cfg += &format!("+duck\n{}-duck\n{}", secs(1.0), secs(0.5));
+    cfg += &format!("+duck\n{}-duck\n{}", secs(2.0), secs(0.5));
     cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}", secs(8.0));
     cfg += &format!("ts_tp 2 0 -1200 60 270 0\n{}ts_tp 1 0 -1344 60 90 0\n{}ts_face 1 2\n{}", secs(0.5), secs(1.0), secs(0.5));
     // Minor 1: `TSExt` both ways (with the bot in, for the server's "not a port client"), the
@@ -328,16 +336,19 @@ fn script() -> String {
     // Minor 2 (#314): the health box and chat hidden and shown again; the server's MOTD (its
     // answer to `motd`) taken over, answered, given back on `menu_shown`, and taken over again
     // for the suspension below to give back.
+    cfg += &format!("motdfile {MOTD_FILE}\n");
     cfg += &format!("echo XTASK: hud\ntsext_test_hud hide\n{}tsext_test_hud show\n{}", secs(1.0), secs(0.5));
     cfg +=
         &format!("echo XTASK: menus\ntsext_test_menu take\nmotd\n{}tsext_test_menu bad\ntsext_test_menu close\n{}", secs(1.0), secs(0.5));
     cfg += &format!("motd\n{}tsext_test_menu giveback\n{}motd\n{}", secs(1.0), secs(1.0), secs(1.0));
+    cfg += "motdfile xtask_no_motd.txt\n";
     cfg += &format!("echo XTASK: spawn\ntsext_test_spawn\n{}", secs(1.0));
     cfg += &format!("echo XTASK: suspend\nts_dev_extsuspend test 1\n{}tsext_test_report\n{}", secs(1.0), secs(0.5));
     cfg += &format!("ts_dev_extsuspend test 0\n{}", secs(0.5));
     cfg += &format!("echo XTASK: report\ntsext_test_report\n{}", secs(0.5));
     // Minor 2 (#306): the bot in view dies; it must leave `visible_players` while it does.
-    cfg += &format!("ts_as 2 kill\n{}", secs(1.0));
+    // (`ts_hurt`, not `ts_as 2 kill`: `kill` is the engine's `ClientKill`, not a client command.)
+    cfg += &format!("ts_hurt 2 500\n{}", secs(1.0));
     cfg += &format!("echo XTASK: kill\nkill\n{}", secs(2.0));
     cfg += "tsext_test_report\nts_dev_extlist\ncl_plugins_list\ncl_plugins_verify\nts_bot_quota 0\n";
     cfg

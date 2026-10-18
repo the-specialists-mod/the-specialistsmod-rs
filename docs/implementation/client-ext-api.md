@@ -297,15 +297,16 @@ All need `ts_dev_scriptinput 1` and `sv_cheats 1`, like scripted input:
   is rewritten (its weapon `tsext_rewritten`) while its `DEATH` event still comes. xtask checks
   the stub's new checks and the `[ts ext]` lines, the kill feed's `with tsext_rewritten`, and the
   replacement's warning.
-* **Minor 2 in the same run** (#306, #314, #315): the script holds `+duck` for a second (the
+* **Minor 2 in the same run** (#306, #314, #315): the script holds `+duck` for two seconds (the
   stub's `local_ducking` check), hides the health box and chat with `tsext_test_hud hide` (the
   stub checks that `hud_elements` still places the hidden health box: `HIDDEN`, `DRAWN`, `RECT`)
   and shows them again (`hud_elements` at the report: all 20, named, the health box placed);
-  `tsext_test_menu take` and `motd` (the server's `SendMOTDToClient`) make a takeover, `bad`
+  `tsext_test_menu take` and `motd` (the server's `SendMOTDToClient`, with `motdfile` pointed at a
+  file xtask writes for the run: `script_start`'s points at none) make a takeover, `bad`
   checks `menu_reply`'s refusals (`INVALID` for a key of a MOTD and an unknown kind, `NOT_FOUND`
   for a kind it didn't take over), `close` answers it (`OK`, then `NOT_FOUND`); another `motd` and
   `tsext_test_menu giveback` (`menu_shown` says 0) gives it back (`menu_closed` `GIVEN_BACK`), and
-  a third `motd` is given back by the suspension. After the report, `ts_as 2 kill` kills the bot
+  a third `motd` is given back by the suspension. After the report, `ts_hurt 2 500` kills the bot
   in view, which must be out of `visible_players` 10 frames later. xtask also checks the `[ts ext]`
   lines (`hud hidden by test: 0x41`, `MOTD taken over by test`, `menu 3 answered: Close`, two
   `menu 3 of test given back to the port`) and that FWGS logged no "non-existent cvar" warning
