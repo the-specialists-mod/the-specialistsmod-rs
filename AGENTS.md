@@ -152,7 +152,8 @@ cargo xtask tspkg [<root>...]             # server offers of client plugins on e
                                           # FastDL stand-in: cards, downloads, tampered packages, an update, op 5's
                                           # card through ts-launcher-fake; enforcement: a [[block]] suspending (resumed
                                           # on leaving) and kicking, a required match with op 3 and the
-                                          # sv_plugin_download_time kick, unlisted (not in all; Xvfb without a desktop)
+                                          # sv_plugin_download_time kick, unlisted; the plugins panel's revoke, unblock
+                                          # and delete (not in all; Xvfb without a desktop)
 cargo xtask plugin-offer [--required] <tspkg>
                                           # check a built package, write its .manifest.toml/.sig/.cert siblings,
                                           # print its plugin_offers.toml entry
@@ -212,7 +213,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   (docs/implementation/client-ext-api.md §3) and `TSRS_DEV_PLUGIN_PROMPT=<id>=<answer>,...`, which
   answers the start-up boxes (client-plugins.md §7.1). Release builds ignore both. `--features e2e`
   client builds (only `cargo xtask relaunch` and `tspkg` build them) answer the relaunch and offer
-  cards from `TSRS_E2E_CARDS=<file>` (client-plugins.md §11). Nothing approves from the console.
+  cards and the `cl_plugins_menu` panel from `TSRS_E2E_CARDS=<file>` (client-plugins.md §11).
+  Nothing approves from the console.
   `ts_dev_extlog 1` (client) logs the extensions' interception decisions as `[ts ext]` lines
   (client-ext-api.md §11).
 - `ts_dev_tspkg 1` (server) counts every port client as hooking `TSPkg`: builds between releases

@@ -13,8 +13,9 @@ issue #301; the launcher side is tsmod-launcher #4 and #5); and the client's off
 §6.4, §7.2, §7.3, §9, op 5's card; `crates/client/src/plugins/offers/`, issue #299; §17 lists what
 that build decided); and enforcement (§13.2–§13.4: `match`, `[[block]]`, `[policy] unlisted`, ops 3
 and 4, suspend and resume, the grace periods; `ts_server::plugin_offers::enforce` and
-`ts_client::plugins::offers::enforce`, issue #302; §18 lists what that build decided).
-`cl_plugins_menu` (#311) isn't built yet.
+`ts_client::plugins::offers::enforce`, issue #302; §18 lists what that build decided); and the
+`cl_plugins_menu` panel (§8; `crates/client/src/plugins/menu/`, issue #311; §19 lists what that
+build decided).
 
 The server loads `tsmod_*` libraries from `dlls/` ([plugin-api.md](plugin-api.md) §1.2); this
 document gives the client the same, with the player's approval. It adds two things:
@@ -251,7 +252,7 @@ platform = "linux-x86_64"
   "Never" everywhere does too; "Never from this server" adds a `state = "blocked"`,
   `scope = "server"` entry beside them.
 * `state = "blocked"` remembers a "Never" choice, so the plugin isn't offered or prompted for
-  again. `cl_plugins_menu` (§10) can undo it.
+  again. `cl_plugins_menu` (§8) can undo it.
 * The store is written atomically (write to a temporary file, then rename). A store that fails
   to parse is set aside as `approved.toml.bad`, and every plugin is prompted for again. That
   includes a store with another `format`, an unknown key, a bad id, or a file path that breaks
@@ -653,7 +654,37 @@ goes through the launcher's question).
   (the last one wins; a value is on when it's a number other than 0, as `atof` sees it); a change
   takes effect at the next start. `cl_plugins_download` and `cl_plugins_allow_unsigned` are read
   when an offer comes (#299), with `cl_plugins_cancel` (port addition), which stops every
-  download and approves nothing. `cl_plugins_menu` is #311 and `tsrs_reconnect` #301.
+  download and approves nothing. `tsrs_reconnect` is #301.
+* **Built (#311): `cl_plugins_menu`** (`ts_client::plugins::menu`: `model.rs` lists and changes,
+  `view.rs` pages, `mod.rs` draws and routes input). The command takes no arguments and only
+  opens the panel. The panel is an offer card (§7.2): the same layout, drawing, virtual cursor
+  and click handling, painted in `HUD_Redraw` last, its clicks only through `IN_MouseEvent`;
+  while it's open the extensions get no `redraw` and queued offer cards wait (a card already open
+  stays on top and takes the input first). Escape closes it.
+  * **The list:** every plugin start-up found (a package version or a hand-installed library),
+    then every other id the store knows (a "Never", or an approval whose files are gone), by id,
+    each a row with its name, version, approvals and what start-up decided (or "loaded").
+  * **A plugin's details:** each store entry (state, scope and servers, trust, source, platform,
+    time), what start-up decided, where it's installed, and every file with its SHA-256: the
+    hashes start-up found, each marked when it differs from the approval of that version or isn't
+    in it, then the approved files it didn't find. A plugin that isn't installed shows the
+    approved hashes.
+  * **Changes**, each behind a confirmation whose button is click-only and armed after the 2 s
+    delay (§7.3); the details' buttons only open the confirmation:
+    * "Revoke approval" removes the id's `allowed` entries (a "Never" stays). A loaded plugin
+      stays loaded until the game exits (§9); one that hasn't loaded yet (a `scope = "server"`
+      approval waiting for its server) won't load. While it's installed, the next start asks.
+    * "Unblock" removes the id's `blocked` entries (an approval stays): the next start asks
+      about it if it's installed, and servers can offer it again.
+    * "Delete files" removes `cl_plugins/<id>/<version>/` (a real directory under
+      `cl_plugins/<id>/`, never a link, a hidden directory or `staging/`) and that version's
+      approval; a "Never" and `cl_plugins_data/<id>/` stay. Not while it's loaded (Windows can't
+      remove a loaded library): revoke, and delete after the next start. Hand-installed
+      libraries aren't deleted from here.
+  * The result is a line at the top of the list and on the console. A store that couldn't be
+    read at start (`approved.toml.bad`) can't be changed from the panel.
+  * **Pages:** the list and the file list are cut to what fits the screen, at least one item a
+    page, with "< Previous" / "Next >", Page Up / Page Down and the mouse wheel.
 
 ## 9. Loading
 
@@ -760,6 +791,10 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
        kick at `sv_plugin_download_time`); `unlisted = "suspend"`. Scenario 3 adds `unlisted =
        "kick"` and a `manual:*` kick block: the older port client and TS 3.0's client still
        join.
+     * **The plugins panel (#311) in `cargo xtask tspkg`**, scenarios 11–12: `cl_plugins_menu`
+       with the same hook (`menu:<id>=revoke|unblock|delete`): revoking the loaded plugin
+       (it stays loaded and installed, the store forgets it), unblocking a "Never from this
+       server", and deleting a blocked, installed version (the block stays).
      * Restart and reconnect, with a fake launcher that records requests (`cargo xtask relaunch`,
        validation.md §2.r, with `crates/fake-launcher`'s `ts-launcher-fake`; the restart comes
        from `ts_dev_restart` until op 5 exists):
@@ -1409,3 +1444,23 @@ Where §13.2 and §13.3 were silent, the enforcement (`ts_server::plugin_offers:
 * **Op 3 with an installed version** answers `restart` and shows the restart card, once per
   connection; while an offer of the plugin is being handled, its own card does that (§13.3).
 * **e2e 5's blocks and `match`** run in `cargo xtask tspkg`, scenarios 7–10 (§11).
+
+## 19. Decisions made building `cl_plugins_menu` (#311)
+
+Where §8 was silent, the panel (`crates/client/src/plugins/menu/`) chose, and §8 now says so
+(issue #330):
+
+* **Drawn as an offer card**, in game, not as an SDL window (those stop the frames) or VGUI (the
+  port has none); offer cards queue behind it, and a card already open stays above it.
+* **Confirmations:** every change has one, and only its button writes, armed like an approving
+  button (§7.3); the panel's other buttons are navigation.
+* **Revoke and unblock are separate:** revoke removes the `allowed` entries and unblock the
+  `blocked` ones (`Store::remove_state`), rather than `Store::remove` taking both.
+* **Revoke stops a plugin that hasn't loaded yet** (a server-scoped approval waiting for its
+  server), as well as at the next start.
+* **Delete** removes one version's directory and its approval, keeps a "Never", and is refused
+  while the plugin is loaded; hand-installed libraries aren't deleted.
+* **Files** are those start-up hashed (marked against the approval), so a changed file shows its
+  new hash; an uninstalled plugin shows its approved hashes.
+* **e2e:** the `TSRS_E2E_CARDS` hook answers the panel too (`menu:<id>=revoke|unblock|delete`),
+  in `cargo xtask tspkg` scenarios 11–12 (§11).

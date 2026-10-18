@@ -13,11 +13,16 @@
 //! in-game card downloads, verifies and installs one, records its approval in the store and in
 //! the gate's state here, and loads it late.
 //!
+//! The plugins panel ([`menu`], issue #311) lists them, shows every file's hash, and revokes,
+//! unblocks and deletes, each on a click.
+//!
 //! **Nothing here approves from the console** (§7.3, §8): the store is written only from a
-//! click in the start-up box or on an offer card (and by tsmod-launcher). `cl_plugins_list` and
-//! `cl_plugins_verify` only read; `cl_plugins_cancel` only stops downloads.
+//! click in the start-up box, on an offer card or in the plugins panel (and by tsmod-launcher).
+//! `cl_plugins_list` and `cl_plugins_verify` only read; `cl_plugins_cancel` only stops downloads;
+//! `cl_plugins_menu` only opens the panel.
 
 pub mod click;
+pub mod menu;
 pub mod offers;
 pub mod prompt;
 pub mod startup;
@@ -273,6 +278,40 @@ pub fn init() {
     engine().add_command(c"cl_plugins_list", cmd_list);
     engine().add_command(c"cl_plugins_verify", cmd_verify);
     offers::init();
+    menu::init();
+}
+
+// ---- the in-game cards and the panel: drawing and input (§7.3) ---------------------------------
+
+/// An offer card or the plugins panel is open: it owns the cursor, and extensions get no `redraw`
+/// (§7.3 "No cover").
+pub fn covers() -> bool {
+    offers::covers() || menu::is_open()
+}
+
+/// The cursor is the card's or the panel's while one is open.
+pub fn wants_cursor() -> bool {
+    covers()
+}
+
+/// `HUD_Redraw`, last: the panel, then an open offer card over it.
+pub fn redraw() {
+    menu::redraw(!offers::covers());
+    offers::redraw();
+}
+
+/// Mouse buttons while [`wants_cursor`] (`IN_MouseEvent`): an offer card takes them first.
+pub fn mouse(state: i32, old: i32, x: i32, y: i32) {
+    if offers::covers() {
+        offers::mouse(state, old, x, y);
+    } else {
+        menu::mouse(state, old, x, y);
+    }
+}
+
+/// `HUD_Key_Event`, first: an offer card's keys, then the panel's. True swallows the key.
+pub fn key_event(down: bool, key: i32) -> bool {
+    offers::key_event(down, key) || menu::key_event(down, key)
 }
 
 /// Every loaded plugin with the version its approval was verified at (`0.0.0` for a
@@ -311,19 +350,7 @@ pub fn list_lines() -> Vec<String> {
             }
             .unwrap_or_else(|| "?".into());
             let state = entry.map_or_else(|| "not approved".to_string(), entry_text);
-            let status = if let Some((_, why)) = suspended.iter().find(|(n, _)| *n == it.name) {
-                format!("loaded, suspended by this server ({why})")
-            } else if loaded.contains(&it.name) {
-                "loaded".to_string()
-            } else {
-                match &it.decision {
-                    Decision::Skip(why) => format!("not loaded: {why}"),
-                    Decision::Allowed { v, .. } => match v.entry.as_ref().filter(|e| e.scope == plugin_pkg::Scope::Server) {
-                        Some(e) => format!("not loaded: {}", startup::server_only(e)),
-                        None => "not loaded".into(),
-                    },
-                }
-            };
+            let status = status_text(it, &loaded, &suspended);
             out.push(format!("  {id} {version}: {state}; {status}"));
         }
         if !s.store_writable {
@@ -334,8 +361,35 @@ pub fn list_lines() -> Vec<String> {
     .unwrap_or_else(|| vec!["client plugins aren't set up in this client".into()])
 }
 
+/// Whether a plugin found at start is loaded (and suspended, and why), or why not; for
+/// `cl_plugins_list` and the panel. `loaded` and `suspended` are the extension loader's.
+pub fn status_text(it: &Item, loaded: &[String], suspended: &[(String, String)]) -> String {
+    if let Some((_, why)) = suspended.iter().find(|(n, _)| *n == it.name) {
+        format!("loaded, suspended by this server ({why})")
+    } else if loaded.contains(&it.name) {
+        "loaded".to_string()
+    } else {
+        match &it.decision {
+            Decision::Skip(why) => format!("not loaded: {why}"),
+            Decision::Allowed { v, .. } => match v.entry.as_ref().filter(|e| e.scope == plugin_pkg::Scope::Server) {
+                Some(e) => format!("not loaded: {}", startup::server_only(e)),
+                None => "not loaded".into(),
+            },
+        }
+    }
+}
+
+/// Saves the store after a click changed it; the error is a console line. A store that couldn't
+/// be read at start isn't written over (the change applies to this game only).
+fn save_store(s: &State) -> Result<(), String> {
+    if !s.store_writable {
+        return Err(format!("{} couldn't be read at start, so changes aren't saved", s.dirs.store().display()));
+    }
+    s.store.save(&s.dirs.store()).map_err(|e| format!("can't save {} ({e})", s.dirs.store().display()))
+}
+
 /// An approval's state, scope, servers and trust, for `cl_plugins_list`.
-fn entry_text(e: &Entry) -> String {
+pub fn entry_text(e: &Entry) -> String {
     use plugin_pkg::{Scope, State, Trust};
     let state = match e.state {
         State::Allowed => "allowed",

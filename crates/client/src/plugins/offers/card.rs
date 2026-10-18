@@ -16,6 +16,7 @@
 use super::flow::{CardInfo, Update};
 use plugin_pkg::{Platform, Trust, VersionChange};
 use shared::protocol::tspkg::Offer;
+use std::borrow::Cow;
 
 /// What a button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +35,20 @@ pub enum Action {
     Update,
     /// "Restart now" (an update that loads at the next start).
     Restart,
+}
+
+/// What a card's button does, for the layout, the clicks and the drawing: the offer cards'
+/// [`Action`], and the plugins panel's (`crate::plugins::menu`), which shares them.
+pub trait Act: Copy + PartialEq {
+    /// Whether the button approves (or otherwise writes the store), so it's click-only and armed
+    /// late (§7.3).
+    fn approves(self) -> bool;
+}
+
+impl Act for Action {
+    fn approves(self) -> bool {
+        Action::approves(self)
+    }
 }
 
 impl Action {
@@ -93,21 +108,26 @@ pub struct Line {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Button {
-    pub label: &'static str,
-    pub action: Action,
+pub struct Button<A = Action> {
+    pub label: Cow<'static, str>,
+    pub action: A,
     /// With Shift held: another label and action ("Never").
-    pub shift: Option<(&'static str, Action)>,
+    pub shift: Option<(&'static str, A)>,
+    /// A row of its own, as wide as the card (the plugins panel's list); its label is cut to fit.
+    pub wide: bool,
 }
 
-impl Button {
-    fn new(label: &'static str, action: Action) -> Button {
-        Button { label, action, shift: None }
+impl<A: Act> Button<A> {
+    pub fn new(label: impl Into<Cow<'static, str>>, action: A) -> Button<A> {
+        Button { label: label.into(), action, shift: None, wide: false }
     }
-    pub fn current(&self, shift: bool) -> (&'static str, Action) {
+    pub fn wide(label: impl Into<Cow<'static, str>>, action: A) -> Button<A> {
+        Button { wide: true, ..Button::new(label, action) }
+    }
+    pub fn current(&self, shift: bool) -> (&str, A) {
         match self.shift {
             Some(s) if shift => s,
-            _ => (self.label, self.action),
+            _ => (&self.label, self.action),
         }
     }
 }
@@ -132,12 +152,12 @@ impl Card {
         self.lines.iter().map(|l| l.text.as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" / ")
     }
 
-    pub fn labels(&self) -> Vec<&'static str> {
-        self.buttons.iter().map(|b| b.label).collect()
+    pub fn labels(&self) -> Vec<&str> {
+        self.buttons.iter().map(|b| b.label.as_ref()).collect()
     }
 }
 
-fn line(text: impl Into<String>, tone: Tone) -> Line {
+pub fn line(text: impl Into<String>, tone: Tone) -> Line {
     Line { text: text.into(), tone }
 }
 
@@ -212,7 +232,7 @@ pub fn offer(o: &Offer, info: &CardInfo, platform: Platform, server: &str) -> Ca
         Button::new(if kind == Kind::Update { "Install update" } else { "Install and allow" }, Action::Install),
         Button::new("Allow on this server only", Action::ServerOnly),
         Button::new("Not now", Action::Later),
-        Button { label: "Never from this server", action: Action::Never, shift: Some(("Never (everywhere)", Action::NeverEverywhere)) },
+        Button { shift: Some(("Never (everywhere)", Action::NeverEverywhere)), ..Button::new("Never from this server", Action::Never) },
     ];
     Card { kind, id: o.id.clone(), lines, buttons }
 }
@@ -301,7 +321,34 @@ pub struct Layout {
 }
 
 pub const PAD: i32 = 12;
-const GAP: i32 = 8;
+pub const GAP: i32 = 8;
+
+/// A card's width on a `sw`-pixel-wide screen.
+pub fn card_width(sw: i32) -> i32 {
+    (sw - 2 * PAD).clamp(200, 720)
+}
+
+/// The width text wraps to inside a card.
+pub fn inner_width(sw: i32) -> i32 {
+    card_width(sw) - 2 * PAD
+}
+
+/// A button's height with `line_h`-pixel lines.
+pub fn button_height(line_h: i32) -> i32 {
+    line_h + 2 * GAP
+}
+
+/// `text` cut to `width` pixels, ending in "..." when cut.
+pub fn fit_text(text: &str, width: i32, measure: &dyn Fn(&str) -> i32) -> String {
+    if measure(text) <= width {
+        return text.to_owned();
+    }
+    let mut out: String = text.to_owned();
+    while !out.is_empty() && measure(&format!("{out}...")) > width {
+        out.pop();
+    }
+    format!("{}...", out.trim_end())
+}
 
 /// Wraps `text` at word boundaries to `width` pixels (`measure` gives a string's width); a word
 /// wider than the line is cut by characters.
@@ -337,22 +384,33 @@ pub fn wrap(text: &str, width: i32, measure: &dyn Fn(&str) -> i32) -> Vec<String
 
 /// Lays `card` out centred on a `sw`×`sh` screen, with `line_h`-pixel lines.
 pub fn layout(card: &Card, sw: i32, sh: i32, line_h: i32, measure: &dyn Fn(&str) -> i32) -> Layout {
-    let w = (sw - 2 * PAD).clamp(200, 720);
+    layout_parts(&card.lines, &card.buttons, sw, sh, line_h, measure)
+}
+
+/// Lays lines and buttons out as a card: the lines wrapped, then the buttons in rows, left to
+/// right (a wide button on a row of its own). Each line adds `line_h` and each row of buttons
+/// [`button_height`] + [`GAP`] to the height, so a caller can tell what fits (the plugins panel's
+/// pages).
+pub fn layout_parts<A: Act>(lines: &[Line], buttons: &[Button<A>], sw: i32, sh: i32, line_h: i32, measure: &dyn Fn(&str) -> i32) -> Layout {
+    let w = card_width(sw);
     let inner = w - 2 * PAD;
     let wrapped: Vec<(String, Tone)> =
-        card.lines.iter().flat_map(|l| wrap(&l.text, inner, measure).into_iter().map(move |t| (t, l.tone))).collect();
-    let button_h = line_h + 2 * GAP;
-    // Buttons in rows, left to right.
-    let mut rows: Vec<Vec<(usize, i32)>> = vec![Vec::new()];
+        lines.iter().flat_map(|l| wrap(&l.text, inner, measure).into_iter().map(move |t| (t, l.tone))).collect();
+    let button_h = button_height(line_h);
+    let mut rows: Vec<Vec<(usize, i32)>> = Vec::new();
     let mut used = 0;
-    for (i, b) in card.buttons.iter().enumerate() {
-        let bw = card_button_width(b, measure);
-        if used > 0 && used + GAP + bw > inner {
+    for (i, b) in buttons.iter().enumerate() {
+        let bw = if b.wide { inner } else { card_button_width(b, measure) };
+        if used == 0 || b.wide || used + GAP + bw > inner {
             rows.push(Vec::new());
             used = 0;
         }
         used += if used > 0 { GAP } else { 0 } + bw;
         rows.last_mut().unwrap().push((i, bw));
+        if b.wide {
+            // Nothing beside it: the next button starts a row.
+            used = inner + GAP;
+        }
     }
     let h = 2 * PAD + wrapped.len() as i32 * line_h + GAP + rows.len() as i32 * (button_h + GAP);
     let panel = Rect { x: (sw - w) / 2, y: ((sh - h) / 2).max(0), w, h };
@@ -366,7 +424,7 @@ pub fn layout(card: &Card, sw: i32, sh: i32, line_h: i32, measure: &dyn Fn(&str)
         })
         .collect();
     y += GAP;
-    let mut buttons = vec![Rect::default(); card.buttons.len()];
+    let mut buttons = vec![Rect::default(); buttons.len()];
     for row in rows {
         let mut x = panel.x + PAD;
         for (i, bw) in row {
@@ -379,8 +437,8 @@ pub fn layout(card: &Card, sw: i32, sh: i32, line_h: i32, measure: &dyn Fn(&str)
 }
 
 /// A button is as wide as its longer label, so Shift doesn't move the others.
-fn card_button_width(b: &Button, measure: &dyn Fn(&str) -> i32) -> i32 {
-    let label = measure(b.label);
+fn card_button_width<A: Act>(b: &Button<A>, measure: &dyn Fn(&str) -> i32) -> i32 {
+    let label = measure(&b.label);
     let shifted = b.shift.map_or(0, |(l, _)| measure(l));
     label.max(shifted) + 2 * PAD + measure(" (2)")
 }
@@ -404,11 +462,15 @@ impl Clicks {
     }
     /// The left button came up on `at`: the action, if it's a click on an enabled button.
     pub fn release(&mut self, card: &Card, at: Option<usize>, armed: bool, shift: bool) -> Option<Action> {
+        self.release_in(&card.buttons, at, armed, shift)
+    }
+    /// [`Clicks::release`] over any card's buttons (the plugins panel's too).
+    pub fn release_in<A: Act>(&mut self, buttons: &[Button<A>], at: Option<usize>, armed: bool, shift: bool) -> Option<A> {
         let pressed = self.pressed.take()?;
         if at != Some(pressed) {
             return None;
         }
-        let (_, action) = card.buttons.get(pressed)?.current(shift);
+        let (_, action) = buttons.get(pressed)?.current(shift);
         (!action.approves() || armed).then_some(action)
     }
     /// The card changed: a press on the old one doesn't carry over.
@@ -547,6 +609,32 @@ mod tests {
         k.press(button_at(&l, ix, iy));
         k.reset();
         assert_eq!(k.release(&c, button_at(&l, ix, iy), true, false), None, "a card change drops the press");
+    }
+
+    #[test]
+    fn wide_buttons_take_a_row_each() {
+        let buttons = vec![
+            Button::wide("first row", Action::Later),
+            Button::wide("second row", Action::Later),
+            Button::new("A", Action::Later),
+            Button::new("B", Action::Later),
+        ];
+        let lines = [line("title", Tone::Title)];
+        let l = layout_parts(&lines, &buttons, 800, 600, 16, &measure);
+        let inner = inner_width(800);
+        assert_eq!((l.buttons[0].w, l.buttons[1].w), (inner, inner));
+        assert!(l.buttons[1].y > l.buttons[0].y && l.buttons[2].y > l.buttons[1].y, "one row each, then the rest");
+        assert_eq!(l.buttons[2].y, l.buttons[3].y, "small buttons share a row");
+        let rows = 3;
+        assert_eq!(l.panel.h, 2 * PAD + 16 + GAP + rows * (button_height(16) + GAP), "the height adds up per line and row");
+        assert_eq!(layout_parts::<Action>(&lines, &[], 800, 600, 16, &measure).panel.h, 2 * PAD + 16 + GAP, "no buttons, no row");
+    }
+
+    #[test]
+    fn fitting_text() {
+        assert_eq!(fit_text("short", 80, &measure), "short");
+        let cut = fit_text("a rather long label", 10 * 8, &measure);
+        assert!(cut.ends_with("...") && measure(&cut) <= 80, "{cut}");
     }
 
     #[test]

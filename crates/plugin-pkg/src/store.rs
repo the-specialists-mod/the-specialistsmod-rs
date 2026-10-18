@@ -264,6 +264,14 @@ impl Store {
         before - self.plugins.len()
     }
 
+    /// Removes the entries for `id` in `state` only: revoking keeps a "Never", and unblocking
+    /// keeps an approval (the client's `cl_plugins_menu`, §8). Returns how many went.
+    pub fn remove_state(&mut self, id: &str, state: State) -> usize {
+        let before = self.plugins.len();
+        self.plugins.retain(|e| !(e.id == id && e.state == state));
+        before - self.plugins.len()
+    }
+
     /// Whether `id` from `publisher_key` is blocked, everywhere or on `server`. A block is for
     /// one publisher key: the same id from another key counts as another plugin (§3.3).
     pub fn is_blocked(&self, id: &str, publisher_key: Option<PublicKey>, server: Option<&str>) -> bool {
@@ -404,6 +412,21 @@ mod tests {
         assert!(store.is_blocked("ads", k, Some("10.0.0.2:27015")));
         assert_eq!(store.remove("ads"), 1, "the block everywhere replaced the per-server one");
         assert!(!store.is_blocked("ads", k, None));
+    }
+
+    #[test]
+    fn remove_state_keeps_the_other_state() {
+        let mut store = Store::new();
+        store.allow(entry("web", "0.1.0"));
+        let mut b = entry("web", "0.1.0");
+        b.servers = vec!["10.0.0.1:27015".into()];
+        store.block(b);
+        store.allow(entry("other", "1.0.0"));
+        assert_eq!(store.remove_state("web", State::Blocked), 1);
+        assert_eq!(store.entries_for("web").map(|e| e.state).collect::<Vec<_>>(), [State::Allowed]);
+        assert_eq!(store.remove_state("web", State::Blocked), 0);
+        assert_eq!(store.remove_state("web", State::Allowed), 1);
+        assert_eq!(store.plugins.len(), 1, "other ids stay");
     }
 
     #[test]
