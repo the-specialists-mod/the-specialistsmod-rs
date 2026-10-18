@@ -30,6 +30,8 @@
 //!   it NULL), and may fill callbacks a newer minor defines: an older client never calls them.
 //!   Minor 1 added the `TSExt` channel messages (issue #294) and the interception hooks
 //!   `message_pre`, `command_pre`, `server_cmd_pre` with [`ClientExtApi::release`] (issue #295).
+//!   Minor 2 added [`local::DUCKING`], dropped dead players from `visible_players` and saves the
+//!   GLES state around `redraw` (issue #306).
 //!
 //! # Interception (minor 1)
 //! * **What reaches the hooks:** `message_pre` gets every user message of TS 3.0's the port hooks
@@ -81,7 +83,9 @@ pub const VERSION: u32 = 1;
 /// 1: `TSExt` channels ([`ClientExtApi::claim_channel`], [`ClientExt::user_message`]) and the
 /// interception hooks ([`ClientExt::message_pre`], [`ClientExt::command_pre`],
 /// [`ClientExt::server_cmd_pre`], [`ClientExtApi::release`]).
-pub const MINOR: u32 = 1;
+/// 2: [`local::DUCKING`], dead players left out of [`ClientExtApi::visible_players`], GLES state
+/// saved around [`ClientExt::redraw`] (issue #306).
+pub const MINOR: u32 = 2;
 /// The entry point every client extension exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_ClientExtLoad";
 /// The prefix of the libraries the client loads from `cl_dlls/`.
@@ -179,7 +183,13 @@ pub struct ClientExt {
     pub frame: Option<extern "C" fn(time: f64)>,
     /// `HUD_Redraw`, after the port's HUD and menus. On desktop GL the port saves the GL state
     /// (attributes, client attributes and the three matrix stacks) before and restores it after,
-    /// so the extension may change any of it; on GLES and the software renderer it doesn't.
+    /// so the extension may change any of it. On GLES (from client minor 2) it saves and restores
+    /// the state an overlay usually changes, read with `glGet*`: the enables, blending, depth,
+    /// viewport, scissor, colour mask, the active texture unit and the 2D textures bound on it
+    /// and on unit 0, pixel alignment, the program, buffers, framebuffer, vertex array object and
+    /// attribute arrays 0..8 (GLES 2+), or the colour, client arrays and matrices (GLES 1).
+    /// Anything else (uniforms, attribute pointers, texture parameters) is the extension's to put
+    /// back. The software renderer has no GL.
     pub redraw: Option<extern "C" fn(time: f32, intermission: c_int)>,
     /// `HUD_Key_Event`, before the port (so Escape reaches the extension first). `binding` is the
     /// key's binding ("" for none). Non-zero swallows the key: neither the port nor the engine
@@ -414,6 +424,9 @@ pub mod local {
     pub const OBSERVER: u32 = 2;
     /// In intermission.
     pub const INTERMISSION: u32 = 4;
+    /// Minor 2: ducked (`FL_DUCKING` in the client's prediction: the duck has finished). A
+    /// minor-1 client never sets it.
+    pub const DUCKING: u32 = 8;
 }
 
 /// The local player ([`ClientExtApi::local_state`]), from the port's HUD state and view.
@@ -508,7 +521,9 @@ pub struct TraceInfo {
 
 /// A player in view ([`ClientExtApi::visible_players`]): alive, not the local player, in this
 /// frame's packet, inside the view, and reached by a world trace from the eye to its head or its
-/// centre.
+/// centre. "Alive" (from client minor 2): not since a `DeathMsg` named it the victim until its
+/// entity moves as a living player again (docs/implementation/client-ext-api.md §6); a minor-1
+/// client also lists a dying player.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VisiblePlayer {

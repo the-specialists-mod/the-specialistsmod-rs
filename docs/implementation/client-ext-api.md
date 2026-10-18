@@ -24,7 +24,7 @@ the ABI and the loader underneath them.
 * `VERSION` (1) is the major version. It must match exactly in both directions: the table's
   `ClientExtApi::version` and the extension's `ClientExt::api_version`. Both structs' sizes must
   match too. A break bumps `VERSION`.
-* `MINOR` (1) counts compatible additions. Both structs end in reserved, NULL slots
+* `MINOR` (2) counts compatible additions. Both structs end in reserved, NULL slots
   (`ClientExtApi::reserved`, 32 at minor 0; `ClientExt::reserved`, 16), so their sizes stay fixed
   while a minor version turns slots into named functions and callbacks. An extension checks
   `ClientExtApi::minor` before calling a function added after minor 0. An older client leaves the
@@ -33,6 +33,10 @@ the ABI and the loader underneath them.
 * **Minor 1** (#294, #295) named 2 table slots and 4 descriptor slots (30 and 12 stay reserved):
   `ClientExtApi::claim_channel` and `release`; `ClientExt::user_message`, `message_pre`,
   `command_pre` and `server_cmd_pre` (§10, §11). An extension built for minor 0 loads unchanged.
+* **Minor 2** (#306): `local::DUCKING` in `LocalState::flags`, dead players left out of
+  `visible_players` (§6), and the GLES state saved around `redraw` (§4). No slot changes; an
+  extension built for minor 1 loads unchanged, and one built for minor 2 that needs these checks
+  `ClientExtApi::minor` (a minor-1 client never sets `DUCKING`).
 * Planned: `hud_set_hidden`, `hud_elements` and `menu_reply` (#314), minor 2.
 
 The webview spec says size and version checks are exact, "the same as plugin-api". That holds for
@@ -117,7 +121,7 @@ extension gets nothing but `resume` and `shutdown`.
 | `init()` | the end of `HUD_Init`: register commands and cvars here, not in the load function |
 | `vid_init()` | the end of `HUD_VidInit` |
 | `frame(time)` | the end of `HUD_Frame` |
-| `redraw(time, intermission)` | `HUD_Redraw`, after the HUD and the menus. On desktop GL the port saves all attributes, client attributes and the projection, model-view and texture matrices around the extensions (`goldsrc::ext::gl::with_saved_state`); not on GLES or the software renderer |
+| `redraw(time, intermission)` | `HUD_Redraw`, after the HUD and the menus, with the GL state saved around the extensions (`goldsrc::ext::gl::with_saved_state`). Desktop GL: all attributes, client attributes and the projection, model-view and texture matrices. GLES (minor 2, #306; `goldsrc::ext::gles_state`): no attribute stack, so the specific state read with `glGet*` and set back: blend, depth test, cull, scissor and stencil enables, blend factors and equations, depth mask and function, viewport, scissor box, colour mask, the active texture unit and the 2D texture on it and on unit 0, pack/unpack alignment; on GLES 2+ the program, array and element buffers, framebuffer, attribute arrays 0..8 enabled and (GLES 3 / GL 3 contexts) the vertex array object; on GLES 1 the 2D-texture and alpha-test enables, the current colour, the client arrays and the three matrices (pushed). The generation comes from `GL_VERSION`. Nothing on the software renderer |
 | `key_event(down, key, binding) -> swallow` | the start of `HUD_Key_Event`, before the port; a swallowed key reaches neither the port nor the engine. Mouse buttons come as `K_MOUSE1`.. keys |
 | `mouse_active(active)` | `IN_ActivateMouse` / `IN_DeactivateMouse` |
 | `wants_cursor() -> bool` | once a frame, from `HUD_Frame`. True takes the mouse: the view holds still and mouse motion moves the port's virtual cursor, as for the port's menus (`input::cursor_owned`) |
@@ -172,17 +176,32 @@ client leaves them NULL). Strings are NUL-terminated; string results go into a c
   in the data directory with stdin, stdout and stderr closed, is reaped on a thread, and the call
   returns its pid.
 * **What the player sees** (`ts_client::ext::view`): `local_state` (index, alive, team, health,
-  armour, weapon with clip and reserve as the HUD shows them, `ON_GROUND`/`OBSERVER`/`INTERMISSION`
-  flags, eye, angles, forward, velocity, speed); `player(slot)` and `scores` (scoreboard rows:
+  armour, weapon with clip and reserve as the HUD shows them, `ON_GROUND`/`OBSERVER`/`INTERMISSION`/
+  `DUCKING` flags, eye, angles, forward, velocity, speed); `player(slot)` and `scores` (scoreboard rows:
   name, team, frags, deaths, ping, local/spectator/same-team flags, no positions); `aim` (the HUD's
   crosshair-ID trace from the eye, 8192 units, players solid: none/world/player/entity, distance,
   point, slot); `trace_line` (world only: players are never solid in it); `visible_players`; `view`
   (screen, FOV, intermission, map); `world_to_screen`; `weapon_name`; `max_clients`.
 * **`visible_players`:** a player counts when it isn't the local player, was in this frame's
-  packet (`messagenum`), is drawn (no `EF_NODRAW`), isn't an observer, projects inside the screen,
-  and a world-only trace from the eye reaches its head (origin + 24) or its centre. Nearest first,
-  with bearing (positive left), elevation (positive up), screen position and origin. Cached for
-  the frame.
+  packet (`messagenum`), is drawn (no `EF_NODRAW`), isn't an observer, isn't dead, projects inside
+  the screen, and a world-only trace from the eye reaches its head (origin + 24) or its centre.
+  Nearest first, with bearing (positive left), elevation (positive up), screen position and
+  origin. Cached for the frame.
+* **Dead** (minor 2, #306; `ts_client::ext::alive`): the client has no other player's health or
+  `deadflag` (`delta.lst` sends them in the client data only), so a player is dead from a
+  `DeathMsg` naming it the victim (blocked and held ones too: state is applied) until its entity
+  comes in a packet newer than the death with a living movetype. A dying player's is
+  `MOVETYPE_TOSS` (`CBasePlayer::Killed`), then `MOVETYPE_NONE` once it lands
+  (`PlayerDeathThink`, 0x8eaec); `CBasePlayer::Spawn` sets `MOVETYPE_WALK`. The packet check is
+  there because a `DeathMsg` is read before its packet's entities. A `Spectator` message for the
+  player (it became an observer, or stopped being one) ends it too, and `InitHUD` and a server
+  change clear every mark. The body left when the player turns observer is a `deadcorpse` entity
+  (`TSCreateDeadCorpse`, 0x70234), outside slots 1..maxClients, so it never counts. Rejected:
+  TS's death sequences on the entity, whose numbers depend on each player model.
+* **`LocalState::flags`** (`local::*`): `ON_GROUND` (`V_CalcRefdef`'s `onground`), `OBSERVER`,
+  `INTERMISSION`, and (minor 2, #306) `DUCKING`: `FL_DUCKING` in `HUD_PostRunCmd`'s predicted
+  `to.client.flags`, the newest command's, so set once the duck has finished (the ducked hull),
+  as the server's movement sets it; never for an observer or a dead player.
 
 **On-screen only.** Nothing gives the position of a player the screen doesn't show, and the one
 trace through players starts at the eye. That is why the webview spec's
@@ -203,14 +222,15 @@ All need `ts_dev_scriptinput 1` and `sv_cheats 1`, like scripted input:
 
 ## 8. Deviations and gaps
 
-The gaps against the webview spec (corpses, ducking, GLES state) are issue #306.
-
 * **The client library's own suffix** isn't used: extensions use the server plugins' suffixes (§2).
-* **GLES and software renderers:** no GL state is saved around `redraw` (§4).
-* **`visible_players` counts corpses:** the client doesn't know other players' health (TS's
-  client neither), so a dead player's body that is drawn and in view is listed. The webview spec
-  says "alive".
-* **`LocalState` has no ducking flag** yet (the webview spec lists `ducking`).
+* **GLES state is the listed state only** (§4): GLES has no attribute stack, so uniforms,
+  attribute pointers, texture parameters and other units' or targets' bindings aren't kept, where
+  the webview spec says "GL state saved and restored". Under `gl4es` the port reads and sets the
+  GLES driver's state beneath gl4es, which may hold state it hasn't sent yet. The software
+  renderer has nothing to save.
+* **"Alive" in `visible_players` is the client's inference** (§6): TS's client has no per-player
+  dead flag and the server sends none; a player that dies and respawns while out of view, without
+  becoming an observer, counts as alive from its first packet in view, as it is.
 * **Not built here:** `hud_set_hidden`, `hud_elements` and `menu_reply` (#314); the plugin offer
   flow and its cards (#299) and `cl_plugins_menu` (#311) (client-plugins.md); a server's
   `suspend` (client-plugins.md §13.3).

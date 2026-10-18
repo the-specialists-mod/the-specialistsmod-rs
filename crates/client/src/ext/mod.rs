@@ -28,6 +28,7 @@
 //! Every dispatch copies the list of extensions out first, so an extension may call the table
 //! (which reads this module's state) from any callback.
 
+pub mod alive;
 pub mod events;
 pub mod gate;
 pub mod intercept;
@@ -149,6 +150,8 @@ struct State {
     holds: intercept::Holds,
     /// Interception warnings already printed (once per extension and text).
     warned: Vec<(ExtId, String)>,
+    /// Other players' deaths, for `visible_players` (issue #306).
+    deaths: alive::Deaths,
 }
 
 static STATE: Global<RefCell<Option<State>>> = Global(RefCell::new(None));
@@ -389,6 +392,7 @@ fn server_changed(server: Option<String>) {
     with(|s| {
         s.server = server.clone();
         s.holds.clear();
+        s.deaths.clear();
     });
     // Plugins approved for this server only load now, and stay loaded (§9); they hear of the
     // server below like the others.
@@ -466,6 +470,7 @@ pub fn on_hud_message(m: shared::protocol::Msg, buf: &[u8]) {
     if with(|s| s.exts.is_empty()) {
         return;
     }
+    note_deaths(m, buf);
     let local = engine().local_player().map_or(0, |p| p.index);
     let map =
         if m == shared::protocol::Msg::InitHUD { events::map_name(&goldsrc::ext::render::level_name()).to_owned() } else { String::new() };
@@ -480,6 +485,30 @@ pub fn on_hud_message(m: shared::protocol::Msg, buf: &[u8]) {
             h.game_event(e);
         }
     }
+}
+
+/// What a message says about other players' deaths ([`alive`]).
+fn note_deaths(m: Msg, buf: &[u8]) {
+    use shared::protocol::hud as p;
+    match m {
+        Msg::DeathMsg => {
+            let Some(d) = p::DeathMsg::decode(buf) else { return };
+            let packet = engine().local_player().map_or(0, |me| me.curstate.messagenum);
+            with(|s| s.deaths.died(d.victim as i32, packet));
+        }
+        Msg::Spectator => {
+            let Some(sp) = p::Spectator::decode(buf) else { return };
+            with(|s| s.deaths.spectator(sp.client as i32));
+        }
+        Msg::InitHUD => with(|s| s.deaths.clear()),
+        _ => {}
+    }
+}
+
+/// Whether player `slot` is dead ([`alive::Deaths::is_dead`]): its entity last came in packet
+/// `messagenum` with `movetype`.
+pub fn player_dead(slot: i32, messagenum: i32, movetype: i32) -> bool {
+    with(|s| s.deaths.is_dead(slot, messagenum, movetype))
 }
 
 /// `HUD_Shutdown`: every extension, suspended or not.

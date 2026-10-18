@@ -18,6 +18,9 @@ pub fn post_run_cmd(from: &mut local_state_t, to: &mut local_state_t, cmd: &mut 
     gun::post_think(from, to, cmd, runfuncs, time, seed);
     // The zoom target `CHud::Think` eases toward (`0x100df1a4`), on every call as in TS.
     state::with(|s| s.fov_target = to.client.fov);
+    // Port addition (issue #306): the client extensions' `LocalState` ducking flag, from the
+    // predicted state of the command just run (the last call of a frame is the newest).
+    crate::ext::view::note_ducking(to.client.flags & FL_DUCKING as i32 != 0);
 }
 
 /// `HUD_TxferLocalOverrides` (`0x1001b900`): SDK set plus `iuser4`.
