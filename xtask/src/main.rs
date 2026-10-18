@@ -44,6 +44,11 @@
 //!                                                 each Linux root's dedicated server with the FWGS
 //!                                                 port client and the original TS client (see
 //!                                                 version.rs; not in `all`)
+//! cargo xtask relaunch [--release] [--xvfb] [<fwgs-root>...]
+//!                                                 restart and reconnect end to end with the e2e
+//!                                                 client and ts-launcher-fake: IPC, relaunch
+//!                                                 arguments, self-relaunch, quit and inform, the
+//!                                                 next start (see relaunch.rs; not in `all`)
 //! cargo xtask all     [--release]                 test, then play, then steam (only when Steam is
 //!                                                 running and logged in; skipped with a note otherwise)
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
@@ -70,6 +75,7 @@ mod client_plugins;
 mod lint;
 mod package;
 mod plugins;
+mod relaunch;
 mod roots;
 mod steam;
 mod ts21;
@@ -160,6 +166,11 @@ fn main() {
                 exit(1);
             }
         }
+        "relaunch" => {
+            if !ctx.relaunch_all(&args) {
+                exit(1);
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -214,7 +225,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|ts21|version|all|client|steam|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|ts21|version|relaunch|all|client|steam|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }

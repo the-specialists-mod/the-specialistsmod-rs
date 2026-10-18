@@ -59,6 +59,7 @@ pub unsafe extern "C" fn HUD_Init() {
     view::init();
     effects::init();
     spectator::init();
+    ts_client::relaunch::init();
     engine().print("[ts] client: Rust TS client library initialized\n");
     ts_client::ext::init();
 }
@@ -349,6 +350,8 @@ pub unsafe extern "C" fn HUD_Frame(time: f64) {
     hud::frame(time);
     input::frame();
     ts_client::ext::frame(time);
+    // Port addition: the next start's "Reconnect to <server>?" (client-plugins.md §13.5).
+    ts_client::relaunch::frame();
 }
 
 #[unsafe(no_mangle)]

@@ -45,6 +45,9 @@ crates/
                  libraries, loaded only through the approval gate). no_std; VERSION exact, MINOR
                  fills reserved slots (docs/implementation/client-ext-api.md)
   tsmod-client-test/ the stub client extension (`cargo xtask client-plugins`); FFI like tsmod-test
+  fake-launcher/ ts-launcher-fake, a stand-in for tsmod-launcher's relaunch side (IPC endpoint,
+                 `relaunch` subcommand) for `cargo xtask relaunch`; a test fixture like
+                 tsmod-test (its Windows named pipe is kernel32 FFI); never in dist/
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
   ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks, the weapon tables in
@@ -61,8 +64,8 @@ xtask/           build, package, install and test tooling (`cargo xtask ...`)
 game/ts/         liblist.gam, gameinfo.txt, delta.lst, the icons (game.tga, ts_logo_big.tga)
 ```
 
-**`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`** (and the test fixture
-`tsmod-test` and `tsmod-client-test`, plugin libraries that are nothing but FFI). `ts-server`,
+**`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`** (and the test fixtures
+`tsmod-test` and `tsmod-client-test`, plugin libraries that are nothing but FFI, and `fake-launcher`). `ts-server`,
 `ts-client`, `shared`, `ts-gameplay` and the `ts30-*`/`ts21-*` packages are `#![deny(unsafe_code)]`,
 and `plugin-pkg` is `#![forbid(unsafe_code)]`. The rules:
 
@@ -130,6 +133,12 @@ cargo xtask version [<root>...]           # the port client's version check at c
                                           # sv_client_require_port) on each Linux root's dedicated server: the
                                           # FWGS port client refused and admitted, the original client refused
                                           # (~1.5 min per root, not in all)
+cargo xtask relaunch [--xvfb] [fwgs fwgs-win]
+                                          # restart and reconnect end to end (e2e client build +
+                                          # ts-launcher-fake): IPC, relaunch arguments, self-relaunch,
+                                          # quit and inform, next start, passworded server; kills the
+                                          # root's games it started, so run it alone (~5 min per root,
+                                          # not in all; docs/validation.md §2.r)
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask steam [listen|<server-root>]  # the Steam HL25 client (Half-Life/ts): play's scenes + changelevel + the
                                           # Steam-only regressions on a listen server (~7 min), or joining
