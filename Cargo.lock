@@ -63,6 +63,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -297,8 +303,12 @@ dependencies = [
 name = "ts-client"
 version = "3.0.8"
 dependencies = [
+ "font8x8",
  "goldsrc",
+ "semver",
+ "serde",
  "shared",
+ "toml",
  "ts-gameplay",
  "ts30-gameplay",
 ]
@@ -417,6 +427,10 @@ dependencies = [
  "ts-server",
  "ts30-gameplay",
 ]
+
+[[package]]
+name = "tsmod-fake-launcher"
+version = "3.0.8"
 
 [[package]]
 name = "tsmod-test"

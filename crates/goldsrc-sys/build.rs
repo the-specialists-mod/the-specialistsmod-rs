@@ -34,6 +34,10 @@ fn main() {
         // the server's `Server_GetBlendingInterface` export (same header)
         .allowlist_type("(sv_blending_interface_t|server_studio_api_t)")
         .allowlist_var("SV_BLENDING_INTERFACE_VERSION")
+        // the client's net API (`pNetAPI`): the connection status and its address (restart and
+        // reconnect, docs/implementation/client-plugins.md §13.5)
+        .header_contents("net_ext.h", "#include \"net_api.h\"\n")
+        .allowlist_type("(net_api_t|net_status_t)")
         .opaque_type("glpoly2_s") // a flexible array member; only reached through pointers
         .rustified_enum("(ALERT_TYPE|PRINT_TYPE)")
         .derive_default(true)

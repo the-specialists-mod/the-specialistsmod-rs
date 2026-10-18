@@ -26,3 +26,5 @@ ts21-client = { path = "../ts21/client", optional = true }
 default = ["ts30", "ts21"]
 ts30 = ["dep:ts30-gameplay", "dep:ts30-client"]
 ts21 = ["dep:ts21-gameplay", "dep:ts21-client"]
+# The relaunch e2e hooks (crates/client/src/relaunch/e2e.rs); only `cargo xtask relaunch` builds it.
+e2e = ["ts-client/e2e"]

@@ -295,6 +295,7 @@ viewport to call `VGui_ViewportPaintBackground` as TS's does (issue #62); FWGS i
 | `spectator` | `CHudSpectator` (HLTV director events, `specmode`) and the spectator view: in-eye camera and gun, `cl_vsmoothing` | rendering |
 | `studio` | the TS studio model renderer (`HUD_GetStudioModelInterface`): split torso/legs bones, gait, corpses, ghosts | rendering |
 | `state` | values both sides read: time scale, health, dead, weapon, fov | shared |
+| `relaunch` | port addition: restart and reconnect (`implementation/client-plugins.md` §13.5): launcher IPC, `ts-launcher relaunch`, self-relaunch where verified, the quit-and-inform / reconnect / password cards (SDL windows of their own), `.reconnect`, `tsrs_reconnect`, `ts_dev_restart` | port |
 
 `HUD_GetStudioModelInterface` installs the TS studio renderer (`studio`), so every studio model
 is drawn by the client: the SDK `CStudioModelRenderer` with TS's split torso/legs bones, gait and

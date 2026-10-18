@@ -1,0 +1,13 @@
+[package]
+name = "tsmod-fake-launcher"
+description = "A stand-in for tsmod-launcher's relaunch side (IPC endpoint and `relaunch` subcommand) for `cargo xtask relaunch`"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# A test fixture like tsmod-test: xtask builds it for the engine root under test and never puts it
+# in dist/. The Windows build creates a named pipe and waits on a process through kernel32, so it
+# may use `unsafe` (AGENTS.md).
+[[bin]]
+name = "ts-launcher-fake"   # starts with "ts-launcher", as the client requires of a launcher
+path = "src/main.rs"

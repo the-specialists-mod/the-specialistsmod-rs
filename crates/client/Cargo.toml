@@ -12,8 +12,19 @@ name = "ts_client"
 goldsrc = { path = "../goldsrc", features = ["client"] }
 shared  = { path = "../shared" }
 ts-gameplay = { path = "../gameplay" }
+# Restart and reconnect (src/relaunch): launcher.toml and .reconnect, version requirements, and
+# the cards' glyphs (font8x8, MIT).
+font8x8 = { version = "0.3", default-features = false }
+semver = { version = "1", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 
 # Tests only: the core's tests run the 3.0 plugin's movement and gun rules (its fixture's `pm`
 # and `gun`). The library never links a ruleset (docs/implementation/gameplay-plugins.md).
 [dev-dependencies]
 ts30-gameplay = { path = "../ts30" }
+
+[features]
+# The relaunch e2e test's hooks (`cargo xtask relaunch`, src/relaunch/e2e.rs): card answers and a
+# self-relaunch override, read from the environment. Never in a shipped build.
+e2e = []

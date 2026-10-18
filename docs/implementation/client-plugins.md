@@ -1,6 +1,8 @@
 # Client plugins: packages, downloads and approval
 
-Status: draft specification, 2026-10-17. Nothing here is built yet.
+Status: draft specification, 2026-10-17. Built so far: the port client's version check (§13.1,
+issue #300) and the port side of restart and reconnect (§13.5, issue #301; the launcher side is
+tsmod-launcher #4 and #5).
 
 The client library has no plugin loading today. The server loads `tsmod_*` libraries from
 `dlls/` ([plugin-api.md](plugin-api.md) §1.2), but nothing equivalent exists on the client. This
@@ -408,11 +410,17 @@ team menus).
   delete a plugin, and see every file and hash. Revoking takes effect at the next start (§9).
 * `cl_plugins_verify`: re-hashes every plugin now and prints the result. It never approves.
 * `tsrs_reconnect <address> [password]`: connects, first asking for the password in a card when
-  `password` is given (§13.5). The launcher's relaunch uses it.
+  the second word is the literal `password` (§13.5). The launcher's relaunch uses it. Any other
+  second word is refused with the usage line, so a password typed as an argument is never used.
+* `ts_dev_restart [restart | port <requirement> [<url>] | plugin <id@version>]` (dev aid):
+  requests a restart and reconnect to the current server for that reason (§13.5), until op 5 and
+  plugin updates do.
 
 None of these can approve. A server that stuffs `cl_plugins 0` or `cl_plugins_menu` can, at
 worst, disable plugins for the next start or open the panel. Both are harmless and visible. A
-stuffed `tsrs_reconnect` does no more than a stuffed `connect`.
+stuffed `tsrs_reconnect` does no more than a stuffed `connect`, and a stuffed `ts_dev_restart`
+no more than a stuffed `quit` followed by a reconnect to the same server (a port update still
+goes through the launcher's question).
 
 ## 9. Loading
 
@@ -480,7 +488,9 @@ tsmod-launcher.
      * With a `[[block]]` on the stub plugin's version, `suspend` must stop its callbacks (it
        logs every call) and `kick` must drop the client with the reason.
      * A `match = "exact"` offer for a newer stub version must answer `restart`.
-     * Restart and reconnect, with a fake launcher that records requests:
+     * Restart and reconnect, with a fake launcher that records requests (`cargo xtask relaunch`,
+       validation.md §2.r, with `crates/fake-launcher`'s `ts-launcher-fake`; the restart comes
+       from `ts_dev_restart` until op 5 exists):
        * with `TSMOD_LAUNCHER_IPC` set, the client must send `relaunch` and quit;
        * with only `ts/launcher.toml`, it must start the fake launcher with the `relaunch`
          arguments;
@@ -686,61 +696,119 @@ version the server needs (op 5), the client uses the first of these that's avail
 4. **None of these:** the client offers to quit, and tells the player how to come back.
 
 Updating the port itself always needs the launcher (case 1 or 2), and the launcher always asks
-first. Without a launcher, the card says where to get the version and offers to quit.
+first. Without a launcher, the card says where to get the version and offers to quit. So a
+`port` restart skips case 3: relaunching the same build would only be refused again.
+
+The port side is `ts_client::relaunch` (issue #301): `relaunch::restart(reason)` is the entry
+point for op 5 and plugin restarts (#298, #299, #302), and the dev aid `ts_dev_restart` (§8)
+calls it until they exist. It reads the server's address from the engine's net API (`Status`,
+`AdrToString`; a listen server's `loopback` can't be restarted into) and its name from the HUD's
+`ServerName`.
+
+**The version refusal (§13.1) doesn't trigger a restart.** `client.dll` never sees a
+`ClientConnect` refusal: the engine shows the reason (with its `[tsrs:<req>]` tag) in its own
+dialog and console. Only op 5, which a client that understands `TSPkg` gets instead of the
+refusal, starts this path. The tag is for tools that read the reason, such as the launcher's
+server browser (tsmod-launcher #6).
 
 #### Finding the launcher
 
 * **Launched by the launcher:** tsmod-launcher sets these environment variables on the game
-  process, and the client reads them at `Initialize`:
+  process, and the client reads them when a restart is needed:
   * `TSMOD_LAUNCHER`: the launcher's executable;
-  * `TSMOD_LAUNCHER_INSTANCE`: its installation id (as in `ts-launcher list`);
+  * `TSMOD_LAUNCHER_INSTANCE`: its installation id (as in `ts-launcher list`). Required with
+    `TSMOD_LAUNCHER`: without it the variable is ignored and `launcher.toml` is tried;
   * `TSMOD_LAUNCHER_IPC`: the IPC endpoint, while the launcher is running.
 * **Started some other way** (from Steam directly, or a desktop shortcut): the launcher writes
-  `ts/launcher.toml` into every installation it manages, holding the executable path, the
-  installation id and the launcher version. It's rewritten at every launch and install.
-* **Checks:** the client accepts a launcher only if the executable exists and the file names
-  this game directory as its installation's root. A stale or foreign file is ignored, as if
-  there were no launcher.
+  `<gamedir>/launcher.toml` (`ts/launcher.toml`) into every installation it manages. It's
+  rewritten at every launch and install:
+
+  ```toml
+  format = 1
+  launcher = "/home/me/.local/bin/ts-launcher"   # the launcher's executable, absolute
+  launcher_version = "0.13.0"
+  instance = "ab12"                              # the installation id: [A-Za-z0-9_.-]{1,64}
+  root = "/home/me/games/ts-xash"                # the installation root: the directory the engine
+                                                 # runs in (the one holding ts/), absolute
+  ```
+
+* **Checks** (`relaunch::launcher`): the client starts a launcher only if
+  * its executable exists, is a file, and its file name starts with `ts-launcher` (any case:
+    `ts-launcher`, `ts-launcher.exe`, `ts-launcher-v0.13.0-linux-x86_64.bin`);
+  * the executable isn't inside the game directory, where a server's downloads land (FWGS
+    downloads only three-letter extensions, so `launcher.toml` itself can't be downloaded,
+    but a planted file mustn't become a program the client starts);
+  * on Unix, it has an execute bit;
+  * for `launcher.toml`: `format` is 1, `instance` is an id, and `root` is the directory the
+    game runs in (both canonicalized).
+
+  A stale or foreign file is ignored, as if there were no launcher; the console says why
+  (`[ts] relaunch: launcher.toml ignored: ...`). The environment's launcher is checked the same
+  way, except for `root`.
 
 #### 1. Launcher running: IPC
 
-* **The endpoint:**
+* **The endpoint** is `TSMOD_LAUNCHER_IPC`'s value as it is; the client never guesses one.
+  The launcher creates it:
   * Linux: a Unix socket, `$XDG_RUNTIME_DIR/ts-launcher-<uid>.sock` (falling back to
-    `/tmp/ts-launcher-<uid>/sock`, mode 0700);
+    `/tmp/ts-launcher-<uid>/sock`, mode 0700). The client connects only to an absolute path
+    whose owner is the client's own user;
   * Windows: the named pipe `\\.\pipe\ts-launcher-<user SID>`, accessible only to the current
-    user.
-* **The request:** one JSON line per request.
+    user. The client opens it as a file (byte mode). Under Wine the whole chain is Windows
+    programs (the game, the launcher's Windows build), so the pid is Wine's.
+* **The request:** one connection per request, one JSON object on one line (UTF-8, ending in
+  `\n`), protocol version 1. Keys in this order, optional ones left out when they don't apply:
 
   ```json
-  {"op": "relaunch", "instance": "ab12", "pid": 41733,
-   "connect": "203.0.113.5:27015", "password_required": true,
-   "reason": "port" | "plugin", "port_version": ">=3.0.8, <3.1", "plugin": "webview@0.2.0",
-   "server_name": "Bob's TS"}
+  {"op":"relaunch","v":1,"instance":"ab12","pid":41733,"connect":"203.0.113.5:27015",
+   "password_required":true,"reason":"port","port_version":">=3.0.8, <3.1",
+   "url":"https://tsmod.org","server_name":"Bob's TS","client_version":"3.0.8"}
   ```
 
+  | key | | meaning |
+  |---|---|---|
+  | `op` | always | `"relaunch"` |
+  | `v` | always | 1; a launcher refuses versions it doesn't know |
+  | `instance` | when known | the installation id (`TSMOD_LAUNCHER_INSTANCE` or `launcher.toml`) |
+  | `pid` | always | the game process to wait for |
+  | `connect` | always | `host:port`: host name or IPv4 (`[A-Za-z0-9.-]`, not starting with `-`) or `[IPv6]`, port 1–65535, ≤ 64 bytes |
+  | `password_required` | always | `true` when the `password` cvar was set; never the password |
+  | `reason` | always | `"restart"` (nothing to update), `"port"` or `"plugin"` |
+  | `port_version` | `port` | a semver requirement, ≤ 48 bytes (op 5's) |
+  | `url` | `port`, when the server gave one | where the server says to get the version, ≤ 96 bytes; shown only |
+  | `plugin` | `plugin` | `id@version`, shown only |
+  | `server_name` | when known | ≤ 64 bytes, control characters removed; shown only |
+  | `client_version` | always | the running port client's version |
+
 * **The handshake:**
-  1. The launcher answers `{"ok": true}`, and the client quits the game (`quit`).
+  1. The launcher answers one line, `{"ok":true}`, and the client quits the game at once
+     (`quit`). Anything else (`{"ok":false,"error":"..."}`, no answer within 2 s, a closed
+     connection) and the client falls back to case 2.
   2. The launcher waits for that pid to exit, up to 30 s. It has the `Child` handle when it
      started the game itself.
   3. If the request is for a port update, it asks the player (below).
   4. It relaunches the installation with `+connect <address>`, or with
      `+tsrs_reconnect <address> password` when `password_required` is set (see "Passwords"
      below). This is the launcher's existing `launch(install, opts, extra)`.
-* **No answer within 2 s,** or an error: fall back to case 2.
 
 #### 2. Launcher installed, not running: relaunch arguments
 
-The client starts the launcher detached, then quits:
+The client starts the launcher detached (its own process group; `DETACHED_PROCESS` on
+Windows; no console output), then quits:
 
 ```
 ts-launcher relaunch --instance ID --wait-pid PID --connect ADDR [--password-required]
-                     [--port-version REQ] [--plugin ID@VERSION] [--server-name NAME]
+                     --reason restart|port|plugin [--port-version REQ] [--url URL]
+                     [--plugin ID@VERSION] [--server-name NAME]
 ```
 
+* The arguments come in this order, each value as its own argument (no shell). Their rules are
+  the IPC request's. The launcher should refuse arguments it doesn't know.
 * `relaunch` is a new launcher subcommand. It opens the launcher's window on a "Reconnecting to
   <server>" view that waits for the game to exit, then runs the same steps as the IPC request.
   When the launcher already has an instance open, the new process hands the request to it over
   IPC and exits.
+* The launcher's environment is the game's, unchanged: the client adds nothing to it.
 
 #### Passwords
 
@@ -751,9 +819,12 @@ The password is asked for again after the relaunch; it's never passed on.
   the `password` cvar was set when the restart was needed.
 * **After the relaunch:** the game starts with `+tsrs_reconnect <address> password` instead of
   `+connect`. `tsrs_reconnect` is a port-only client command. With `password`, it shows a card
-  with the server's name and address and a masked password field ("Connect" / "Cancel"), sets
-  the `password` cvar from it and connects. Without it, it's the same as `connect`. It can do
-  nothing a server's `connect` stufftext can't already do.
+  with the server's address (the name isn't on the command line) and a masked password field
+  ("Connect" / "Cancel"), sets the `password` cvar from it (`password "<typed>"` through the
+  client command buffer, which doesn't echo) and connects. Without it, it's the same as
+  `connect`. It can do nothing a server's `connect` stufftext can't already do.
+* **The field** takes printable ASCII except `"`, up to 63 characters, and shows a `*` for
+  each. "Connect" needs a click and a non-empty password.
 * **The launcher doesn't ask:** it would have to pass the password on the game's command line,
   where other users can read it.
 * **If the password is wrong,** the engine's refusal ("Bad server password") shows as usual, and
@@ -802,17 +873,26 @@ Notes:
 
 #### 3. No launcher: self-relaunch
 
-* **FWGS:** the client re-executes the engine binary with its original arguments plus
-  `+connect`. It reads them from `/proc/self/cmdline` on Linux and `GetCommandLineW` on Windows,
-  then quits.
-* **Steam HL25:** the client opens `steam://run/70//-game ts +connect <address>/`, through
-  `xdg-open` or `ShellExecuteW`, then quits. Steam starts the game again once it has exited.
-* Each is enabled per engine and platform only once §11's relaunch tests pass there, and
-  those tests run in `cargo xtask all` (FWGS) and `cargo xtask steam` (HL25), so a regression
-  shows up. Until then, and on a platform where a test fails, the client uses case 4. The
-  things to prove are that Steam starts the game again while the old process is still exiting,
-  and that the FWGS re-exec rebuilds the right command line under Wine, where the original
-  arguments are the Windows command line.
+* **FWGS:** the client re-executes the engine binary (`current_exe`) with its original
+  parameters, then the connect command (`+connect <address>`, or `+tsrs_reconnect <address>
+  password`), and quits. It reads the arguments from `/proc/self/cmdline` on Linux and
+  `GetCommandLineW` (std's parsing) on Windows. Every console command of the original command
+  line is dropped (`+name` and the words after it up to the next `+` or `-` word: `+connect`,
+  `+exec`, `+map`, `+password`); the engine parameters (`-game ts`, `-windowed`, ...) are
+  kept. Repeating a command could run the same script, restart included, again, and a
+  `+password` would pass the password on.
+* **Steam HL25:** the client opens `steam://run/70//-game%20ts%20+connect%20<address>/` (or
+  the `+tsrs_reconnect ... password` form), through `xdg-open` or `rundll32
+  url.dll,FileProtocolHandler`, then quits. Steam starts the game again once it has exited.
+* Each is enabled per engine and platform only once §11's relaunch tests pass there
+  (`SELF_RELAUNCH_VERIFIED` in `crates/client/src/relaunch/plan.rs`, empty until then: FWGS
+  Linux, FWGS Windows (verified under Wine), Steam Linux, Steam Windows). Until then, and on a
+  platform where a test fails, the client goes on to case 4. The FWGS test is `cargo xtask
+  relaunch` (validation.md §2.r), whose e2e build forces the self-relaunch on with
+  `TSRS_E2E_SELF_RELAUNCH=1` so the platform can be verified before it is listed; the HL25 test
+  belongs in `cargo xtask steam` and doesn't exist yet. The things to prove are that Steam starts
+  the game again while the old process is still exiting, and that the FWGS re-exec rebuilds the
+  right command line under Wine, where the original arguments are the Windows command line.
 
 #### 4. Nothing else: quit and inform
 
@@ -821,9 +901,37 @@ Notes:
   launcher".
 * **The address:** it's copied to the clipboard (`SDL_SetClipboardText`).
 * **The buttons:** "Quit now" and "Stay" (stay disconnected, or on the server until it kicks).
-* **Next start:** the client writes `cl_plugins_data/.reconnect` with the address and a time.
-  At the next start, within 10 minutes, the main menu shows "Reconnect to <server>?", a click
-  card under §7.3's rules. Nothing connects without that click.
+* **Next start:** the client writes `<gamedir>/cl_plugins_data/.reconnect` when it shows the
+  card (whichever button is chosen, so a player who stays and quits later is offered it too):
+
+  ```toml
+  format = 1
+  address = "203.0.113.5:27015"
+  server_name = "Bob's TS"
+  password_required = true     # never the password
+  time = 1792300000            # Unix seconds
+  ```
+
+  At the next start, 30 frames in (after the command line's own `+connect` or
+  `+tsrs_reconnect`), the client reads it once and deletes it. Within 10 minutes of `time`, and
+  unless the game is already connecting or a `tsrs_reconnect` ran, it shows "Reconnect to
+  <server>?", a click card under §7.3's rules, with the password field when
+  `password_required`. Nothing connects without that click.
+
+#### The cards
+
+The main menu has no HUD to draw on, so the three cards (quit and inform, "Reconnect to ...",
+the password card) are small windows of their own: an SDL2 window from the library the engine
+has loaded (`goldsrc::platform::sdl::Window`), drawn with filled rectangles on its surface
+(SDL's software path, which never touches the engine's GL context) and the public-domain
+font8x8 glyphs. They are modal: the engine's frames stop while one is up, so a card left open
+for long while connected can time the connection out. The engine window's events during that
+time are dropped. Every card follows §7.3: the approving button ("Quit now", "Reconnect",
+"Connect") takes only a mouse click and is disabled for 2 s; Enter does nothing; Escape and
+closing the window choose the other button. Without SDL2, or when the window can't open, the
+card is printed to the console and answered as "Stay" / "Cancel". Over a fullscreen game the
+window is raised and always on top; whether every window manager shows it there is part of
+open question 3.
 
 #### Safety
 

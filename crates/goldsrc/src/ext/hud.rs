@@ -401,6 +401,22 @@ impl ClEngine {
         // SAFETY: the engine sets `pEventAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
         unsafe { self.f.pEventAPI.as_ref() }
     }
+    /// The net API's `Status`: whether the client is connected, and the server's address as the
+    /// engine's `AdrToString` writes it (`203.0.113.5:27015`, `loopback` on a listen server).
+    /// `None` when the engine has no net API or leaves either slot null. Port addition for
+    /// restart and reconnect (docs/implementation/client-plugins.md §13.5).
+    pub fn net_status(&self) -> Option<(bool, String)> {
+        // SAFETY: the engine sets `pNetAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
+        let api = unsafe { self.f.pNetAPI.as_ref() }?;
+        let (status_fn, adr_fn) = (api.Status?, api.AdrToString?);
+        let mut st = net_status_t::default();
+        // SAFETY: `Status` fills the `net_status_t` it is given; `st` is a local of that type.
+        unsafe { status_fn(&mut st) };
+        // SAFETY: `AdrToString` reads the address it is given and returns null or a NUL-terminated
+        // string in an engine buffer, copied before the next engine call.
+        let adr = unsafe { cstr(adr_fn(&mut st.remote_address)) }.to_string_lossy().into_owned();
+        Some((st.connected != 0, adr))
+    }
     /// The demo API (`IsPlayingback` etc.), if the engine provides one.
     pub fn demo_api(&self) -> Option<&'static demo_api_s> {
         // SAFETY: the engine sets `pDemoAPI` (or leaves it null) before `Initialize` and keeps the table for the process.

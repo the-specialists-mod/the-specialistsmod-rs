@@ -84,6 +84,7 @@ cargo xtask meck                        # grenades on MecklenburgV_Rain_Final on
 cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath, four addbot bots, botlearn (~45 s)
 cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
 cargo xtask version [<root>...]         # the port client's version check at connect, Linux roots one by one (~1.5 min each, §2.z)
+cargo xtask relaunch [--xvfb] [fwgs fwgs-win]  # restart and reconnect end to end, one root after the other (~5 min each, §2.r)
 cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
@@ -290,6 +291,44 @@ Client logs go to `target/version-client-<root>-<case>.log` and
 (§5): its dedicated servers run `sv_client_version exact` and `sv_client_require_port 1`, and a
 check fails if the server logs `[ts] version: refused`.
 
+### 2.r Restart and reconnect (`cargo xtask relaunch`)
+
+`cargo xtask relaunch [--release] [--xvfb] [fwgs] [fwgs-win]` (issue #301,
+`xtask/src/relaunch.rs`, `implementation/client-plugins.md` §11 e2e 5 and 6, §13.5). Two dedicated
+servers run on the `fwgs` root (TS 3.0 mode, `ts_dojo`): an open one and one with
+`sv_password`. Each client root (default `fwgs`, then `fwgs-win` under Wine) is installed with the
+**e2e client** (`--features ts-client-dll/e2e`: cards answered from the file in
+`TSRS_E2E_CARDS`, self-relaunch forced on or off by `TSRS_E2E_SELF_RELAUNCH=1` or `0`; neither is a console
+command) and `ts-launcher-fake` (`crates/fake-launcher`, copied to `<root>/xtask_launcher/`). The
+normal client is installed again afterwards. Scenarios, each starting a client that joins and
+runs `ts_dev_restart`:
+
+| Scenario | Set up | Passes when |
+|---|---|---|
+| `ipc` | `TSMOD_LAUNCHER*`, the fake launcher serving the IPC endpoint | the request arrives, the first game exits, the fake launcher restarts it with `+connect`, it joins |
+| `ipc-silent` | the endpoint never answers; passworded server | after 2 s the client starts `ts-launcher-fake relaunch ... --password-required`; the restarted game shows the password card and joins |
+| `relaunch-args` | `ts/launcher.toml` only; passworded | `relaunch --instance e2e --wait-pid --connect ... --password-required`, no IPC; card; joins |
+| `self` | no launcher, `TSRS_E2E_SELF_RELAUNCH=1` | the engine re-executes itself with `+connect`; joins; no launcher involved |
+| `inform` | no launcher, `TSRS_E2E_SELF_RELAUNCH=0`; passworded | the inform card; "Quit now" quits; `.reconnect` has the address and `password_required = true`; nobody rejoins |
+| next start | `.reconnect` from `inform` | "Reconnect to ..." with the password field; cancelled, nothing connects and the file is gone; then a fresh file and a click joins |
+
+Every scenario also fails if the password (`e2e-secret-4711`) appears in the fake launcher's log
+(every IPC line, every argument, its whole environment) or in `.reconnect`. Joins are read from
+A2S (`players`), so no client log is needed; the logs are in `target/relaunch/` (`*-game.log` the
+first game, `*-launcher.log` what the fake launcher got, `*-cards.txt.shown` the cards).
+
+`--xvfb` runs the games on `Xvfb :87` from `~/scratch/xvfb` (or `XVFB=<path>`), so nothing opens
+on the desktop. The run kills the games it started (Linux: every process running the root's
+`xash3d`; Wine: `wineserver -k` on the shared prefix), so run it alone, not next to another
+xtask run on the same roots. About 5 minutes per root; not in `all`.
+
+**Self-relaunch is off by default** on every platform (`SELF_RELAUNCH_VERIFIED` in
+`crates/client/src/relaunch/plan.rs` is empty). When the `self` scenario passes on a root, add
+its platform (`FwgsLinux` for `fwgs`, `FwgsWindows` for `fwgs-win`) in the same change that
+records the run here; remove it if the scenario fails later. Not covered yet: Steam HL25
+(`steam://run`, #307), the real tsmod-launcher with port update and downgrade (#308), and the
+card windows themselves, which the e2e hook answers without opening (#309).
+
 ## 3. Results
 
 ### 3.1 Final run (all work packages merged)
@@ -341,6 +380,12 @@ and the chase camera on a bot, with no user-message errors in its log
 win32 under Wine (listen server, `ts_arena`).
 
 ### 3.2 Not validated
+
+* `cargo xtask relaunch` (restart and reconnect, §2.r, issue #301) was added without being run:
+  its scenarios, the IPC exchange over a real socket and pipe, and the self-relaunch on both FWGS
+  roots are unverified, so self-relaunch stays disabled everywhere. Unit tests cover the
+  decision order, the arguments, the IPC lines, `launcher.toml` and `.reconnect`, the cards'
+  logic, and a Unix-socket round trip.
 
 * `cargo xtask plugins` (the `tsmod_*` loader and the `tsmod_test` bot backend on all seven roots,
   [implementation/bot-plugins.md](implementation/bot-plugins.md) §6) was added with issue #104 and
