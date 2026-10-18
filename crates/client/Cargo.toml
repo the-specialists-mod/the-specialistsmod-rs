@@ -12,6 +12,7 @@ name = "ts_client"
 goldsrc = { path = "../goldsrc", features = ["client"] }
 shared  = { path = "../shared" }
 ts-gameplay = { path = "../gameplay" }
+ts-client-ext-api = { path = "../client-ext-api" }
 
 # Tests only: the core's tests run the 3.0 plugin's movement and gun rules (its fixture's `pm`
 # and `gun`). The library never links a ruleset (docs/implementation/gameplay-plugins.md).

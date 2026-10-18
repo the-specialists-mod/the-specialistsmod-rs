@@ -293,6 +293,7 @@ version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
+ "ts-client-ext-api",
  "ts-gameplay",
  "ts30-gameplay",
 ]
@@ -302,13 +303,19 @@ name = "ts-client-dll"
 version = "3.0.8"
 dependencies = [
  "goldsrc",
+ "libloading",
  "shared",
  "ts-client",
+ "ts-client-ext-api",
  "ts21-client",
  "ts21-gameplay",
  "ts30-client",
  "ts30-gameplay",
 ]
+
+[[package]]
+name = "ts-client-ext-api"
+version = "3.0.8"
 
 [[package]]
 name = "ts-gameplay"
@@ -412,6 +419,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsmod-client-test"
+version = "3.0.8"
+dependencies = [
+ "ts-client-ext-api",
+]
+
+[[package]]
 name = "tsmod-test"
 version = "3.0.8"
 dependencies = [
@@ -447,5 +461,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 name = "xtask"
 version = "3.0.8"
 dependencies = [
+ "ts-client-ext-api",
  "ts-plugin-api",
+ "tsmod-client-test",
 ]

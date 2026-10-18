@@ -542,3 +542,79 @@ impl TextMessage {
         unsafe { crate::util::cstr(self.0.pMessage) }
     }
 }
+
+/// `net_status_t` (SDK and FWGS `net_api.h`), mirrored because the bindings leave the net API
+/// opaque. Both engines' `netadr_t` is 20 bytes with the IPv4 fields where Quake 2 had them
+/// (FWGS packs its IPv6 variant around them, `netadr.h`), so the layout is the same; the tail is
+/// padding in case an engine's struct is longer.
+#[repr(C)]
+struct NetStatus {
+    connected: c_int,
+    local_address: [u8; 20],
+    remote_address: [u8; 20],
+    packet_loss: c_int,
+    latency: f64,
+    connection_time: f64,
+    rate: f64,
+    _spare: [u8; 64],
+}
+
+/// The first slots of `net_api_t`.
+#[repr(C)]
+struct NetApi {
+    init_networking: Option<unsafe extern "C" fn()>,
+    status: Option<unsafe extern "C" fn(*mut NetStatus)>,
+}
+
+/// A `netadr_t` as text: `loopback`, `a.b.c.d:port`, or `None` for another kind (IPX, IPv6)
+/// or none. `type` is the first u16 (FWGS's `type`; the low half of GoldSrc's 32-bit enum), the
+/// IPv4 address bytes 4..8, the port (network order) bytes 18..20.
+pub fn netadr_text(adr: &[u8; 20]) -> Option<String> {
+    const NA_LOOPBACK: u16 = 1;
+    const NA_IP: u16 = 3;
+    match u16::from_le_bytes([adr[0], adr[1]]) {
+        NA_LOOPBACK => Some("loopback".to_owned()),
+        NA_IP => Some(format!("{}.{}.{}.{}:{}", adr[4], adr[5], adr[6], adr[7], u16::from_be_bytes([adr[18], adr[19]]))),
+        _ => None,
+    }
+}
+
+impl ClEngine {
+    /// The server the client is connected to (net API `Status`): `loopback` for a listen server,
+    /// `a.b.c.d:port`, or `None` while not connected (or on an engine without the net API).
+    /// Port addition for client extensions (issue #293).
+    pub fn server_address(&self) -> Option<String> {
+        // SAFETY: the engine sets `pNetAPI` (or leaves it null) before `Initialize` and keeps the
+        // table for the process; its first two slots are `InitNetworking` and `Status`.
+        let api = unsafe { self.f.pNetAPI.cast::<NetApi>().as_ref() }?;
+        let status = api.status?;
+        // SAFETY: plain data, all-zero is valid.
+        let mut st: NetStatus = unsafe { std::mem::zeroed() };
+        // SAFETY: engine callback from the net API table; it fills a `net_status_t`, which
+        // `NetStatus` lays out (with spare room after it).
+        unsafe { status(&mut st) };
+        if st.connected == 0 {
+            return None;
+        }
+        netadr_text(&st.remote_address)
+    }
+}
+
+#[cfg(test)]
+mod net_tests {
+    use super::netadr_text;
+
+    #[test]
+    fn addresses() {
+        let mut a = [0u8; 20];
+        a[0] = 1;
+        assert_eq!(netadr_text(&a).as_deref(), Some("loopback"));
+        a[0] = 3;
+        a[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        a[18..20].copy_from_slice(&27015u16.to_be_bytes());
+        assert_eq!(netadr_text(&a).as_deref(), Some("127.0.0.1:27015"));
+        a[0] = 6;
+        assert_eq!(netadr_text(&a), None, "IPv6");
+        assert_eq!(netadr_text(&[0; 20]), None);
+    }
+}

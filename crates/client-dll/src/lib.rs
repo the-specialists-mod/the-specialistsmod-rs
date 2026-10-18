@@ -17,6 +17,7 @@
 #[cfg(not(any(feature = "ts30", feature = "ts21")))]
 compile_error!("enable at least one gameplay ruleset feature: `ts30` or `ts21`");
 
+mod ext;
 mod tempents;
 mod vgui;
 
@@ -34,6 +35,8 @@ pub unsafe extern "C" fn Initialize(funcs: *mut cl_enginefunc_t, version: c_int)
     unsafe { cl::init(funcs) };
     goldsrc::panic::install("ts_client_panic.log", |m| engine().print(m));
     register_gameplay();
+    // Port addition (issue #293): the approved client extensions, before `HUD_Init`.
+    ext::load_all();
     1
 }
 
@@ -57,6 +60,7 @@ pub unsafe extern "C" fn HUD_Init() {
     effects::init();
     spectator::init();
     engine().print("[ts] client: Rust TS client library initialized\n");
+    ts_client::ext::init();
 }
 
 #[unsafe(no_mangle)]
@@ -67,6 +71,7 @@ pub unsafe extern "C" fn HUD_VidInit() -> c_int {
     voice::vid_init();
     effects::vid_init();
     spectator::vid_init();
+    ts_client::ext::vid_init();
     1
 }
 
@@ -76,6 +81,7 @@ pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
     spectator::redraw();
     // The voice panels paint with the viewport's (`menus`), in VGUI1's child order.
     menus::redraw(time);
+    ts_client::ext::redraw(time, intermission != 0);
     1
 }
 
@@ -96,6 +102,7 @@ pub unsafe extern "C" fn HUD_Reset() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_Shutdown() {
+    ts_client::ext::shutdown();
     // TS's `HUD_Shutdown` (`0x10027250`) jumps to `ShutdownInput` (`0x10027240`).
     input::shutdown();
     // TS's `g_VoiceStatus` destructor writes `voice_ban.dt` when the library unloads.
@@ -148,10 +155,12 @@ pub unsafe extern "C" fn HUD_GetHullBounds(hull: c_int, mins: *mut f32, maxs: *m
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn IN_ActivateMouse() {
     input::activate_mouse();
+    ts_client::ext::mouse_active(true);
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn IN_DeactivateMouse() {
     input::deactivate_mouse();
+    ts_client::ext::mouse_active(false);
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn IN_MouseEvent(mstate: c_int) {
@@ -183,6 +192,7 @@ pub unsafe extern "C" fn CL_CreateMove(frametime: f32, cmd: *mut usercmd_t, acti
     // SAFETY: the engine passes its usercmd_t (or null) for the duration of this call.
     if let Some(cmd) = unsafe { cmd.as_mut() } {
         input::create_move(frametime, cmd, active != 0);
+        ts_client::ext::usercmd(cmd, active != 0);
     }
 }
 
@@ -215,6 +225,7 @@ pub unsafe extern "C" fn CAM_Think() {
 pub unsafe extern "C" fn V_CalcRefdef(p: *mut ref_params_t) {
     // SAFETY: the engine passes its ref_params_t (or null) for the duration of this call.
     if let Some(p) = unsafe { p.as_mut() } {
+        ts_client::ext::view::note_refdef(p.onground != 0);
         view::calc_refdef(p);
     }
 }
@@ -337,12 +348,17 @@ pub unsafe extern "C" fn HUD_Frame(time: f64) {
     view::frame(time);
     hud::frame(time);
     input::frame();
+    ts_client::ext::frame(time);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_Key_Event(down: c_int, key: c_int, binding: *const c_char) -> c_int {
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.
     let binding = unsafe { goldsrc::util::cstr(binding) };
+    // Port addition: client extensions see the key first, and may swallow it (issue #293).
+    if ts_client::ext::key_event(down != 0, key, binding) {
+        return 0;
+    }
     input::hud_key_event(down != 0, key, binding)
 }
 

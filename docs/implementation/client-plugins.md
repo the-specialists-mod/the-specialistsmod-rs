@@ -1,14 +1,18 @@
 # Client plugins: packages, downloads and approval
 
-Status: draft specification, 2026-10-17. Nothing here is built yet.
+Status: draft specification, 2026-10-17. Built so far: the client extension API and its loader
+with the approval-gate seam ([client-ext-api.md](client-ext-api.md), issue #293); nothing of the
+packages, the store or the prompts yet.
 
 The client library has no plugin loading today. The server loads `tsmod_*` libraries from
 `dlls/` ([plugin-api.md](plugin-api.md) §1.2), but nothing equivalent exists on the client. This
 document adds two things:
 
 * **Client plugins:** native libraries that `client.dll` loads through the client extension API.
-  That API is specified in `the-specialists-mod/tsmod-plugin-webview-rs` `docs/specifications.md`
-  §4.1, and will move here when it's built.
+  That API is [client-ext-api.md](client-ext-api.md) (first specified in
+  `the-specialists-mod/tsmod-plugin-webview-rs` `docs/specifications.md` §4.1). Its loader asks
+  an approval gate about every library before mapping it; the store described here plugs into
+  that gate (client-ext-api.md §3).
 * **Packages and approval:** how plugins are installed, downloaded from a server, and approved by
   the player. Every file of an approved plugin is hashed, and nothing loads unless every hash
   still matches.

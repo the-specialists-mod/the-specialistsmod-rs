@@ -190,3 +190,121 @@ pub fn hint(target: u32, mode: u32) {
         unsafe { f(target, mode) }
     }
 }
+
+/// The renderer the engine draws with: what a client extension is told (port addition, issue
+/// #293), and whether [`proc_address`] has anything to give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Renderer {
+    Software,
+    /// Desktop OpenGL ([`active`]).
+    Gl,
+    /// One of FWGS's GLES renderers (`gles1`, `gles2`, `gl4es`, `gles3compat`).
+    Gles,
+}
+
+/// The renderer: FWGS's `r_refdll_loaded`, or on engines without it (Steam GoldSrc) hardware
+/// (`hw`) or software.
+pub fn renderer() -> Renderer {
+    let refdll = crate::client::Cvar::find(c"r_refdll_loaded");
+    if !refdll.is_null() {
+        return match refdll.string().map(|s| s.to_bytes()) {
+            Some(b"gl") => Renderer::Gl,
+            Some(b"gles1" | b"gles2" | b"gl4es" | b"gles3compat") => Renderer::Gles,
+            _ => Renderer::Software,
+        };
+    }
+    if crate::ext::studio::hardware_kind() == 1 { Renderer::Gl } else { Renderer::Software }
+}
+
+/// A GL or GLES function of the renderer's context (looked up as the module docs say, never
+/// loading a library), or null for none and on the software renderer. For client extensions,
+/// which draw with the renderer's own context.
+pub fn proc_address(name: &CStr) -> *mut c_void {
+    if renderer() == Renderer::Software { std::ptr::null_mut() } else { lookup(name) }
+}
+
+const GL_ALL_ATTRIB_BITS: u32 = 0x000f_ffff;
+const GL_CLIENT_ALL_ATTRIB_BITS: u32 = 0xffff_ffff;
+const GL_MATRIX_MODE: u32 = 0x0ba0;
+const GL_MODELVIEW: u32 = 0x1700;
+const GL_PROJECTION: u32 = 0x1701;
+const GL_TEXTURE: u32 = 0x1702;
+
+type Mask = unsafe extern "system" fn(u32);
+type Void = unsafe extern "system" fn();
+type GetIntegerv = unsafe extern "system" fn(u32, *mut i32);
+
+/// The GL 1.1 calls [`with_saved_state`] needs.
+struct SaveFns {
+    push_attrib: Mask,
+    pop_attrib: Void,
+    push_client_attrib: Mask,
+    pop_client_attrib: Void,
+    matrix_mode: Mask,
+    push_matrix: Void,
+    pop_matrix: Void,
+    get_integerv: GetIntegerv,
+}
+
+fn save_fns() -> Option<&'static SaveFns> {
+    static FNS: OnceLock<Option<SaveFns>> = OnceLock::new();
+    if !active() {
+        return None;
+    }
+    FNS.get_or_init(|| {
+        let f = |name: &CStr| {
+            let p = lookup(name);
+            (!p.is_null()).then_some(p)
+        };
+        // SAFETY: a non-null GL export with each of these names is the GL 1.1 function with the
+        // `APIENTRY` signature given here (gl.h).
+        unsafe {
+            Some(SaveFns {
+                push_attrib: std::mem::transmute::<*mut c_void, Mask>(f(c"glPushAttrib")?),
+                pop_attrib: std::mem::transmute::<*mut c_void, Void>(f(c"glPopAttrib")?),
+                push_client_attrib: std::mem::transmute::<*mut c_void, Mask>(f(c"glPushClientAttrib")?),
+                pop_client_attrib: std::mem::transmute::<*mut c_void, Void>(f(c"glPopClientAttrib")?),
+                matrix_mode: std::mem::transmute::<*mut c_void, Mask>(f(c"glMatrixMode")?),
+                push_matrix: std::mem::transmute::<*mut c_void, Void>(f(c"glPushMatrix")?),
+                pop_matrix: std::mem::transmute::<*mut c_void, Void>(f(c"glPopMatrix")?),
+                get_integerv: std::mem::transmute::<*mut c_void, GetIntegerv>(f(c"glGetIntegerv")?),
+            })
+        }
+    })
+    .as_ref()
+}
+
+/// Runs `f` with the desktop GL state saved around it: every attribute group, every client
+/// attribute group and the projection, model-view and texture matrices, then the matrix mode the
+/// caller had. Port addition for client extensions' `redraw` (issue #293), so an extension can't
+/// leave the HUD's GL state changed. On GLES and the software renderer (or a GL library missing
+/// a function) `f` just runs.
+pub fn with_saved_state<R>(f: impl FnOnce() -> R) -> R {
+    let Some(g) = save_fns() else { return f() };
+    let mut mode = GL_MODELVIEW as i32;
+    // SAFETY: GL 1.1 functions looked up above, called with their signatures from a render
+    // callback (`HUD_Redraw`) where the renderer's context is current; each push below is
+    // matched by a pop after `f`, in reverse order, and `mode` is a valid out-pointer.
+    unsafe {
+        (g.get_integerv)(GL_MATRIX_MODE, &mut mode);
+        (g.push_attrib)(GL_ALL_ATTRIB_BITS);
+        (g.push_client_attrib)(GL_CLIENT_ALL_ATTRIB_BITS);
+        for m in [GL_PROJECTION, GL_MODELVIEW, GL_TEXTURE] {
+            (g.matrix_mode)(m);
+            (g.push_matrix)();
+        }
+        (g.matrix_mode)(mode as u32);
+    }
+    let r = f();
+    // SAFETY: as above: the matching pops.
+    unsafe {
+        for m in [GL_TEXTURE, GL_MODELVIEW, GL_PROJECTION] {
+            (g.matrix_mode)(m);
+            (g.pop_matrix)();
+        }
+        (g.pop_client_attrib)();
+        (g.pop_attrib)();
+        (g.matrix_mode)(mode as u32);
+    }
+    r
+}

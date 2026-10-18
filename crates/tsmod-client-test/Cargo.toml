@@ -1,0 +1,22 @@
+[package]
+name = "tsmod-client-test"
+description = "The stub client extension: the cl_dlls/tsmod_* loader and the client extension API, for cargo xtask client-plugins"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# A client extension is FFI from end to end (its export, the API's function pointers), so like
+# the *-dll crates and tsmod-test it may use `unsafe` (AGENTS.md). It is a test fixture: xtask
+# builds and installs it for the dev roots, never into dist/.
+[lib]
+name = "tsmod_client_test"   # -> libtsmod_client_test.so / tsmod_client_test.dll; xtask installs cl_dlls/tsmod_test<suffix>
+crate-type = ["cdylib", "rlib"]
+
+# The helper process the stub starts through `verified_spawn`: it writes `spawned.txt` in its
+# working directory (the extension's data directory) and exits.
+[[bin]]
+name = "tsmod-client-test-helper"
+path = "src/bin/helper.rs"
+
+[dependencies]
+ts-client-ext-api = { path = "../client-ext-api" }

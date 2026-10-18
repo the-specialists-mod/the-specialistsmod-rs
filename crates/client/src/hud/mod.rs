@@ -334,6 +334,8 @@ fn on_message(m: Msg, buf: &[u8]) {
     if m == Msg::DeathMsg {
         notice::on_death_msg(buf);
     }
+    // Port addition: the client extensions' game events (issue #293).
+    crate::ext::on_hud_message(m, buf);
 }
 
 /// Mirror the values other modules read into `crate::state`.

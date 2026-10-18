@@ -10,6 +10,7 @@
 
 pub mod bsp;
 pub mod gameplay;
+pub mod plugin_lib;
 pub mod pm;
 pub mod protocol;
 pub mod text;
