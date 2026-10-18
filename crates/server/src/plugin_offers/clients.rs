@@ -82,7 +82,8 @@ pub enum Outcome {
     /// An answer to an offer; `kick` when it refuses a required offer and the server kicks for
     /// that (`sv_plugin_required_kick`).
     Answer { id: String, version: String, state: State, reason: String, kick: bool },
-    /// A `tspkg list` line; `complete` on the closing one.
+    /// A `tspkg list` line; `complete` on the closing line that completed the list (the first one
+    /// this connection: the plugin API's `client_plugin_list` fires then).
     List { complete: bool },
 }
 
@@ -109,7 +110,7 @@ impl Client {
                 if !hooks && self.sent.is_empty() && self.notice.is_none() {
                     return Outcome::Ignored(Some("tspkg list from a client that doesn't hook TSPkg".into()));
                 }
-                let complete = items.is_empty();
+                let complete = items.is_empty() && !self.plugins_complete;
                 for item in items {
                     if !self.plugins.contains(&item) {
                         self.plugins.push(item);
@@ -133,6 +134,24 @@ impl Client {
                 Outcome::Answer { id, version, state, reason, kick }
             }
         }
+    }
+}
+
+impl Client {
+    /// The version of `id` this client has loaded, as far as the server knows (the plugin API's
+    /// `client_plugin_version`, client-plugins.md §13.3): an answer `loaded` (the version it
+    /// loaded since the list), else the list's, else an answer `have` (the same manifest approved
+    /// already, which the client loads at once unless another version is loaded, and that one is
+    /// in the list).
+    pub fn loaded_version(&self, id: &str) -> Option<&str> {
+        let answer = self.answers.get(id);
+        if let Some((v, State::Loaded, _)) = answer {
+            return Some(v);
+        }
+        if let Some((_, v)) = self.plugins.iter().find(|(i, _)| i == id) {
+            return Some(v);
+        }
+        answer.filter(|(_, s, _)| *s == State::Have).map(|(v, _, _)| v.as_str())
     }
 }
 
@@ -216,6 +235,26 @@ mod tests {
         assert_eq!(c.command(1.0, &args("list"), false, false), Outcome::List { complete: true });
         assert!(c.plugins_complete);
         assert_eq!(c.plugins.len(), 3);
+        assert_eq!(c.command(1.0, &args("list"), false, false), Outcome::List { complete: false }, "completed once");
+        assert_eq!(c.command(1.0, &args("list c@1.0.0"), false, false), Outcome::List { complete: false });
+    }
+
+    #[test]
+    fn loaded_versions() {
+        let mut c = offered(false);
+        assert_eq!(c.loaded_version("webview"), None);
+        c.command(1.0, &args("webview 0.1.0 offered"), false, true);
+        assert_eq!(c.loaded_version("webview"), None, "offered isn't loaded");
+        c.command(1.0, &args("webview 0.1.0 have"), false, true);
+        assert_eq!(c.loaded_version("webview"), Some("0.1.0"), "approved here: loaded at once");
+        c.command(1.0, &args("list webview@0.0.9 manual:dev@0.0.0"), false, true);
+        assert_eq!(c.loaded_version("webview"), Some("0.0.9"), "the list knows better than have");
+        assert_eq!(c.loaded_version("manual:dev"), Some("0.0.0"));
+        c.command(1.0, &args("webview 0.1.0 restart"), false, true);
+        assert_eq!(c.loaded_version("webview"), Some("0.0.9"), "still the old one until the restart");
+        c.command(1.0, &args("webview 0.1.0 loaded"), false, true);
+        assert_eq!(c.loaded_version("webview"), Some("0.1.0"), "loaded since the list");
+        assert_eq!(c.loaded_version("other"), None);
     }
 
     #[test]

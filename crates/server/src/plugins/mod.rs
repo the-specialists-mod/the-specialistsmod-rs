@@ -85,6 +85,11 @@ pub trait PluginHooks {
     fn weapon_fired(&self, _player: i32, _weapon: i32, _origin: [f32; 3], _dir: [f32; 3], _silenced: bool) {}
     /// Version 6: a player picked up an item (`kind` an `ts_plugin_api::entity` kind).
     fn item_pickup(&self, _player: i32, _entity: i32, _kind: i32, _id: i32) {}
+    /// Version 8: a client's `tspkg` answer (`state` a `ts_plugin_api::plugin_state` value).
+    fn client_plugin_state(&self, _player: i32, _id: &CStr, _version: &CStr, _state: i32, _reason: &CStr) {}
+    /// Version 8: a client's `tspkg list` is complete. The entries point into strings that live
+    /// for the call.
+    fn client_plugin_list(&self, _player: i32, _plugins: &[ts_plugin_api::ClientPlugin]) {}
 }
 
 struct Loaded {
@@ -487,6 +492,35 @@ pub fn item_pickup(e: *mut edict_t, item: *mut edict_t, kind: i32, id: i32) {
     }
 }
 
+/// A string from a client for a C callback (its arguments have no NULs; one that did would be "").
+fn c_string(s: &str) -> std::ffi::CString {
+    std::ffi::CString::new(s).unwrap_or_default()
+}
+
+/// Version 8: player `e`'s client answered `tspkg <id> <version> <state> [reason]` (from its
+/// command, so at once).
+pub fn client_plugin_state(e: *mut edict_t, id: &str, version: &str, state: i32, reason: &str) {
+    if any() {
+        let (i, id, version, reason) = (index(e), c_string(id), c_string(version), c_string(reason));
+        each(|h| h.client_plugin_state(i, &id, &version, state, &reason));
+    }
+}
+
+/// Version 8: player `e`'s `tspkg list` is complete: its loaded plugins (id, version).
+pub fn client_plugin_list(e: *mut edict_t, plugins: &[(String, String)]) {
+    if any() {
+        let i = index(e);
+        let strings: Vec<_> = plugins.iter().map(|(id, v)| (c_string(id), c_string(v))).collect();
+        let list = client_plugin_entries(&strings);
+        each(|h| h.client_plugin_list(i, &list));
+    }
+}
+
+/// The C entries of [`client_plugin_list`], pointing into `strings` (which must outlive them).
+fn client_plugin_entries(strings: &[(std::ffi::CString, std::ffi::CString)]) -> Vec<ts_plugin_api::ClientPlugin> {
+    strings.iter().map(|(id, v)| ts_plugin_api::ClientPlugin { id: id.as_ptr(), version: v.as_ptr() }).collect()
+}
+
 /// Whether anything listens for [`melee_attack`].
 pub fn wants_melee_attack() -> bool {
     all().iter().any(|h| h.wants_melee_attack())
@@ -561,6 +595,17 @@ mod tests {
         let (mut t, mut d) = (0.5, 10.0);
         assert!(!melee_chain(&hooks, 1, &mut t, &mut d));
         assert_eq!((t, d), (1.0, 5.0));
+    }
+
+    #[test]
+    fn client_plugin_entries_point_at_their_strings() {
+        assert_eq!(c_string("web view"), c"web view".to_owned());
+        assert_eq!(c_string("a\0b"), std::ffi::CString::default(), "a NUL can't come from argv; it would be dropped");
+        let strings = [(c_string("webview"), c_string("0.1.0")), (c_string("manual:dev"), c_string("0.0.0"))];
+        let list = client_plugin_entries(&strings);
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[1].id, list[1].version), (strings[1].0.as_ptr(), strings[1].1.as_ptr()));
+        assert!(client_plugin_entries(&[]).is_empty());
     }
 
     #[test]

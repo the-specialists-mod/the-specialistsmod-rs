@@ -20,9 +20,11 @@
 //! Version 3 (issue #104) added the host services ([`crate::plugins::host`]), the bot functions
 //! ([`bots`]), and the entity and game state ([`world_info`]). Version 6 added the frame's world
 //! ([`frame`]: every player, the items, the frame), what the new callbacks report ([`events`]) and
-//! the map keys the classes don't keep ([`keys`]).
+//! the map keys the classes don't keep ([`keys`]). Version 8 added the port client's extensions and
+//! version ([`ext`]) and the client plugin offers ([`client_plugins`]).
 
 pub mod bots;
+pub mod client_plugins;
 pub mod events;
 pub mod ext;
 pub mod frame;

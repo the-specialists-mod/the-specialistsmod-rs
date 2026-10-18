@@ -19,10 +19,10 @@
 //!   required-offer kick at `sv_plugin_download_time`. The server can suspend or kick; it can
 //!   never approve or load anything for the player (§7.3).
 //!
-//! The plugin API's `offer_client_plugin` and
-//! `client_plugin_state` wait for the API version after 8 (version 8 brought only `ext_message` and
-//! `client_port_version`, issues #294, #304); meanwhile an AMX Mod X plugin
-//! sees the `tspkg` client command first and can offer through `sv_plugin_offer`.
+//! The plugin API (version 8, issue #321, `plugin_api::client_plugins`) offers through
+//! [`offer`] (`offer_client_plugin`), reads [`loaded_version`] (`client_plugin_version`), and
+//! hears every answer and each completed list from [`client_command`] (`client_plugin_state`,
+//! `client_plugin_list`). An AMX Mod X plugin also sees the `tspkg` client command first.
 
 pub mod check;
 pub mod clients;
@@ -234,8 +234,8 @@ fn send(s: &mut Server, e: *mut edict_t, m: &tspkg::Message) -> bool {
     }
 }
 
-/// Offers `ready` to `e` (which hooks `TSPkg`) and records it.
-fn send_offer(s: &mut Server, e: *mut edict_t, index: usize) {
+/// Offers `ready` to `e` (which hooks `TSPkg`) and records it: true when it went out.
+fn send_offer(s: &mut Server, e: *mut edict_t, index: usize) -> bool {
     let o = &s.ready[index].offer;
     let m = match offer_message(o) {
         Ok(m) => m,
@@ -245,7 +245,7 @@ fn send_offer(s: &mut Server, e: *mut edict_t, index: usize) {
                 log(&format!("can't offer {key}: {why}"));
                 s.logged.push(key);
             }
-            return;
+            return false;
         }
     };
     let (id, sent) = (o.id.clone(), Sent { version: o.version.to_string(), required: o.required });
@@ -256,7 +256,26 @@ fn send_offer(s: &mut Server, e: *mut edict_t, index: usize) {
             s.clients.resize_with(i + 1, Client::default);
         }
         s.clients[i].sent.insert(id, sent);
+        return true;
     }
+    false
+}
+
+/// The index of `id` among the offers that passed this map's checks.
+pub fn ready_index(id: &str) -> Option<usize> {
+    with(|s| s.ready.iter().position(|r| r.offer.id == id))
+}
+
+/// Offers the checked offer `index` ([`ready_index`]) to `e`, which hooks `TSPkg`, as
+/// `sv_plugin_offer` does: true when it went out (the plugin API's `offer_client_plugin`).
+pub fn offer(e: *mut edict_t, index: usize) -> bool {
+    with(|s| index < s.ready.len() && send_offer(s, e, index))
+}
+
+/// The version of `id` that `e`'s client has loaded, as far as the server knows
+/// ([`Client::loaded_version`]; the plugin API's `client_plugin_version`).
+pub fn loaded_version(e: *mut edict_t, id: &str) -> Option<String> {
+    client(e, |c| c.loaded_version(id).map(str::to_owned)).flatten()
 }
 
 /// `ClientConnect`, once the client is let in: a new connection (or the reconnect of a map
@@ -440,13 +459,16 @@ pub fn client_command(e: *mut edict_t, args: &Args) -> bool {
         Outcome::Ignored(None) => {}
         Outcome::List { complete } => {
             if complete {
-                let list =
-                    client(e, |c| c.plugins.iter().map(|(i, v)| format!("{i}@{v}")).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+                let plugins = client(e, |c| c.plugins.clone()).unwrap_or_default();
+                let list = plugins.iter().map(|(i, v)| format!("{i}@{v}")).collect::<Vec<_>>().join(" ");
                 log(&format!("{who}: plugins: {}", if list.is_empty() { "none" } else { &list }));
+                crate::plugins::client_plugin_list(e, &plugins);
             }
         }
         Outcome::Answer { id, version, state, reason, kick: k } => {
             log(&format!("{who}: {id} {version} {state}{}{reason}", if reason.is_empty() { "" } else { " " }));
+            // Before a kick, so plugins hear the refusal that caused it.
+            crate::plugins::client_plugin_state(e, &id, &version, crate::plugin_api::client_plugins::state_code(state), &reason);
             if k {
                 let (name, homepage, version) = with(|s| {
                     s.ready

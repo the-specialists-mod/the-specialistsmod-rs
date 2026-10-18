@@ -14,8 +14,8 @@ of plugin use it:
   from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
   ([bot-plugins.md](bot-plugins.md)).
 
-The current version is **8** (#294 and #304: `TSExt` messages to the port client's extensions and
-the port client's version; version 7 was #290: plugin identities for metamod plugins, so an AMX Mod
+The current version is **8** (#294, #304 and #321: `TSExt` messages to the port client's
+extensions, the port client's version, and the client plugin offers; version 7 was #290: plugin identities for metamod plugins, so an AMX Mod
 X-hosted bot can be a backend; version 6 was tsmod-rcbot-rs's needs, version 5 tsmod-amxx-rs#8
 and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible: a break bumps
 `VERSION` and the interface name, so a stale plugin finds nothing (§8, §9, §10, §11, §12, §13).
@@ -28,6 +28,7 @@ and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible
 | The `tsmod_*` loader: naming rule, header check, descriptor checks | `crates/server/src/plugins/loader.rs` (pure, unit tested; the naming and header rules are `crates/shared/src/plugin_lib.rs`, shared with the client's extension loader, client-ext-api.md); opening the library and calling it: `crates/server-dll/src/plugins.rs` |
 | Plugin callbacks (when they run), log, data directory, commands, cvars | `crates/server/src/plugins/mod.rs`, `plugins/host.rs` |
 | `ext_message` and `client_port_version` (version 8, §13) | `crates/server/src/plugin_api/ext.rs` (the `TSExt` wire format `crates/shared/src/protocol/ext.rs`, client-ext-api.md §10) |
+| `offer_client_plugin`, `client_plugin_version`, the `client_plugin_state` and `client_plugin_list` events (version 8, §13) | `crates/server/src/plugin_api/client_plugins.rs`; the offers and each client's answers and list `crates/server/src/plugin_offers/` (`mod.rs`: `offer`, `loaded_version`, the events from `client_command`; `clients.rs`: `Client::loaded_version`); the events' dispatch `plugins/mod.rs` |
 | Plugin ids, attached plugins and listener owners (version 7, §1.4) | `crates/server/src/plugins/mod.rs` (`Registry`, `attach_plugin`, `detach_plugin`); their backends `crates/server/src/bot_backend/mod.rs` (`register_plugin`, `drop_plugin`) |
 | The stub plugin | `crates/tsmod-test` (`cargo xtask plugins`) |
 | Power-up runs, time scale, `TSSlowMo` override | `crates/server/src/rules/powerup.rs` |
@@ -181,6 +182,19 @@ slots):
   `give_ground_weapon` decided, seen as a change of the inventory), a power-up (its bits, before a
   random one re-rolls) or a dropped gun (`CTSWorldGun::GetWeapon`), with the `entity_info` kind and
   the weapon id or power-up bits. A temporary power-up or dropped gun is removed by then.
+
+Version 8 adds (#321, client-plugins.md §6.1, §13.3; both run at once, from the client's
+`tspkg` command, after `client_command` saw it):
+
+* `client_plugin_state(player, id, version, state, reason)`: every `tspkg <id> <version> <state>
+  [reason]` answer the server takes (to an offer, a `block`'s `suspended`, op 5's `tsrs`); `state`
+  is `ts_plugin_api::plugin_state` (0 `have` to 10 `restart`, the protocol's order), `reason` ""
+  if none. Answers the server ignores (ids it didn't send, over the rate limit) don't fire it. For
+  a refused required offer it fires before the kick (`sv_plugin_required_kick`).
+* `client_plugin_list(player, plugins, count)`: the client's `tspkg list` is complete (its closing
+  line), with `count` `ClientPlugin { id, version }` entries (`manual:<name>` and `0.0.0` for a
+  hand-installed library). Once per connection, so at every map; a list still incomplete when the
+  grace period ends doesn't fire it.
 
 **Listeners** (version 5): `add_listener(plugin, &Plugin)` registers a descriptor for a plugin the
 server didn't load (a metamod plugin, such as `tsmod-amxx-rs`'s tsx). The server checks its `size`
@@ -815,21 +829,35 @@ unchanged:
 
 ## 13. Version 7 → 8
 
-Version 8 (#294, #304) is a break only in name: `CreateInterface` answers only
-`TSRS_PluginApi008` and `Plugin::api_version` must be 8. Every version-7 entry is unchanged; two
-functions are new, last in the table (`crates/server/src/plugin_api/ext.rs`):
+Version 8 (#294, #304, #321) is a break in name and in the descriptor's size: `CreateInterface`
+answers only `TSRS_PluginApi008`, `Plugin::api_version` must be 8, and `Plugin` gains two
+callbacks at its end (`client_plugin_state`, `client_plugin_list`, §1.3), so a version-7
+descriptor's `size` is refused. Every version-7 entry is unchanged; four functions are new, last in
+the table (`crates/server/src/plugin_api/ext.rs`, `client_plugins.rs`):
 
 | Function | Behaviour |
 |---|---|
 | `ext_message(player, channel, data, len, flags)` | One `TSExt` message (the port's user message for client extensions, registered after TS's 64; client-ext-api.md §10): `string channel` then `len` bytes. To `player` (`MSG_ONE`), or with `player` 0 to every port client, each `MSG_ONE`; `ext_flag::UNRELIABLE` (1) sends `MSG_ONE_UNRELIABLE`. Only clients that hook `TSExt` get it, read at the send as `ClientConnect` reads it (`gameplay::with_connecting_client`): a `_tsrs` version at or above `port::TSPKG_SINCE`, `TSPkg`'s gate with its `ts_dev_tspkg` dev aid (TS 3.0's client and port clients up to 3.0.8 don't hook it; client-plugins.md §12). Checks in this order: `NOT_PLAYER` (no connected player there), `INVALID` (a channel that isn't 1 to 15 bytes of ASCII letters, digits, `_`, `-`, `.`; a payload over `EXT_MESSAGE_MAX` (192) minus the channel and its NUL; NULL `data` with a length; an unknown flag), `UNSUPPORTED` (that player's client doesn't hook `TSExt`: TS 3.0's client, a port client before 3.0.9, a bot, HLTV). Returns the number of clients it went to (0 for a broadcast with no port client). One message is one delivery: the port doesn't chunk (a channel's own protocol does, as the webview's). |
 | `client_port_version(player, buf, len)` | The player's `_tsrs` as `major.minor.patch` (`port::parse_userinfo_version`: the string, or the numeric form a `+connect` sends first, #303), its length returned. 0 and "" for a client without the port (TS 3.0's, a bot, HLTV); `UNSUPPORTED` for a port client whose value isn't a version (the `1` of clients from before #303); `NOT_PLAYER` otherwise. For AMX Mod X plugins with a version policy of their own (client-plugins.md §13.1). |
 
-The client plugin offers' `offer_client_plugin` and `client_plugin_state` (client-plugins.md §6.1,
-issue #298) are not in version 8; they wait for the next break.
+| `offer_client_plugin(player, id)` | One `TSPkg` offer of `id`, a `plugin_offers.toml` entry that passed this map's checks, as `sv_plugin_offer` sends it (recorded for the client, so its answers count, client-plugins.md §6.1): to `player`, or with `player` 0 to every client that hooks `TSPkg`. Checks in this order: `NOT_PLAYER`, `INVALID` (NULL `id`, an `id` that isn't UTF-8, or no checked offer of it: `sv_plugin_offers` lists them), `UNSUPPORTED` (the player's client doesn't hook `TSPkg`: TS 3.0's, a port client before 3.0.9, a bot, HLTV). Returns the number of clients it went to; 0 also when the offer can't be sent now (a relative `url` while `sv_downloadurl` is empty or not `http(s)://`; logged once a map). |
+| `client_plugin_version(player, id, buf, len)` | The version of `id` (a plugin id or `manual:<name>`) the player's client has loaded as far as the server knows: its answer `loaded`, else its `tspkg list`, else its answer `have` (the same manifest approved already, loaded at once) (`plugin_offers::clients::Client::loaded_version`). Written like `client_port_version`, its length returned; 0 and "" when the server doesn't know it loaded (also before the list came). `NOT_PLAYER`, `INVALID` (NULL `id`), `UNSUPPORTED` (as above: such a client runs no client plugins the server can learn of). |
 
-Downstream: the AMX Mod X modules (tsmod-amxx-rs#22: the bump, natives for both functions, and a
+Decisions (#321): the spec's `client_plugin_state(edict, id, state)` also carries the answer's
+version and reason (both in the `tspkg` line, and a plugin needs the version to tell an update's
+`restart` from the old one's), and the list event fires on the list's first closing line only
+(a client may send a bare `tspkg list` again; the enforcement keeps counting what came).
+`offer_client_plugin` with player 0 offers to every client that hooks `TSPkg`, as
+`sv_plugin_offer all` and `ext_message` do. These were first planned for a version 9; version 8
+wasn't released yet (v3.0.8 shipped version 7), so they joined it.
+
+Downstream: the AMX Mod X modules (tsmod-amxx-rs#22: the bump, natives for the four functions and
+forwards for the two events, and a
 metamod guard on raw `message_begin(TSExt)` to clients without `_tsrs`, which the game library
 can't refuse) and the bot plugins pinned by port tag (tsmod-rcbot-rs, tsmod-amxx-rcbot: the bump
 only) move with their next pin. `cargo xtask plugins` checks both functions on a bot-only server
-(`ext_message`, `client_port_version`); `cargo xtask client-plugins` sends `TSExt` to the port
+(`ext_message`, `client_port_version`, `offer_client_plugin` and `client_plugin_version` on a
+bot and with bad arguments); `cargo xtask tspkg` part 1 installs the stub on the dedicated server,
+where the port client's `tsmod_test_offer` offers through `offer_client_plugin` and the stub logs
+both events with `client_plugin_version`'s answer; `cargo xtask client-plugins` sends `TSExt` to the port
 client and reads its version back (client-ext-api.md §9).

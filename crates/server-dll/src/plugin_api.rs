@@ -96,6 +96,8 @@ fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sy
         detach_plugin,
         ext_message,
         client_port_version,
+        offer_client_plugin,
+        client_plugin_version,
     }
 }
 
@@ -585,6 +587,24 @@ unsafe extern "C" fn ext_message(player: c_int, channel: *const c_char, data: *c
 
 unsafe extern "C" fn client_port_version(player: c_int, buf: *mut c_char, len: c_int) -> c_int {
     match api::ext::client_port_version(player) {
+        // SAFETY: the table's contract for the buffer.
+        Ok(v) => unsafe { put_str(buf, len, &v) },
+        Err(code) => code,
+    }
+}
+
+/// Guard: an `id` that isn't UTF-8 counts as no offer (`INVALID`): offer ids are ASCII.
+unsafe extern "C" fn offer_client_plugin(player: c_int, id: *const c_char) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let id = unsafe { arg(id) }.map(|i| i.to_str().unwrap_or(""));
+    api::client_plugins::offer_client_plugin(player, id)
+}
+
+/// Guard: an `id` that isn't UTF-8 names no plugin the client listed (its `tspkg` came as text).
+unsafe extern "C" fn client_plugin_version(player: c_int, id: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let id = unsafe { arg(id) }.map(|i| i.to_str().unwrap_or(""));
+    match api::client_plugins::client_plugin_version(player, id) {
         // SAFETY: the table's contract for the buffer.
         Ok(v) => unsafe { put_str(buf, len, &v) },
         Err(code) => code,

@@ -360,8 +360,14 @@ offer of the same file under another id with a wrong hash. The port's FWGS clien
 1. With `sv_cheats 1`, `ts_dev_tspkg 1` (a build between releases reports the last release, below
    `TSPKG_SINCE`) and `sv_plugin_required_kick 1`: the server logs `offering xtask_stub` and
    `not offering xtask_bad`, sends the offer, and the client prints it with the URL built from
-   `sv_downloadurl`. The client script sends `cmd tspkg xtask_stub 0.1.0 offered`, then `denied`;
-   the server logs both and kicks with "requires the client plugin xtask stub 0.1.0 (<homepage>)".
+   `sv_downloadurl`. The stub server plugin `tsmod_test` is installed for this part (#321): the
+   client script sends `cmd tsmod_test_offer xtask_stub`, and the stub offers through the plugin
+   API's `offer_client_plugin` (`offer_client_plugin #1 xtask_stub: 1 unknown=-2`). Then `cmd tspkg
+   xtask_stub 0.1.0 offered`, a bare `cmd tspkg list` (the list complete, if the client's own hadn't
+   completed it) and `denied`; the server logs them and kicks with "requires the client plugin
+   xtask stub 0.1.0 (<homepage>)", and the stub logs `client_plugin_state` for `offered` and for
+   `denied` (`loaded=-`: `client_plugin_version` knows of no loaded version) and
+   `client_plugin_list` with `client_plugin_version` agreeing with every entry.
 2. `sv_client_version ">=99.0.0"`, `sv_plugin_check_time 3`: the client is let in
    (`[ts] version: let in`), gets op 5 and prints the version the server needs, and is kicked
    with the `[tsrs:>=99.0.0]` tag.

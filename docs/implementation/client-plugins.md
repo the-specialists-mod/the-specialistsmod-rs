@@ -365,10 +365,9 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
   `ClientPutInServer` (#317). Offers also go out on demand, with `sv_plugin_offer <#userid|name|all> <id>`;
   `sv_plugin_withdraw <#userid|name|all> <id>` sends op 2 for one sent earlier, and
   `sv_plugin_offers` lists the offers and their checks. The plugin API's
-  `offer_client_plugin(edict, id)` waits for the plugin-api version after 8 (version 8, #294/#304,
-  brought only `ext_message` and `client_port_version`, plugin-api.md §13; tsmod-amxx-rs can
-  expose it as a native). Until then an AMX Mod X plugin can run `sv_plugin_offer` and sees the
-  `tspkg` client command before the game does.
+  `offer_client_plugin(player, id)` (version 8, #321, plugin-api.md §13) does what
+  `sv_plugin_offer` does, for a player or with 0 for all; tsmod-amxx-rs exposes it as a native.
+  An AMX Mod X plugin also sees the `tspkg` client command before the game does.
 * **Required plugins:** with `sv_plugin_required_kick 1` (default 0), a player who answers
   `denied`, `unsupported` or `failed` to a required offer is kicked. The kick reason names the
   plugin and its homepage ("This server requires the client plugin <name> <version>
@@ -386,7 +385,8 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
 | `sv_plugin_offers [reload]` | | lists the offers, their checks, the blocks and the policy |
 * **What the server learns:** the client's state for each offer, through `tspkg` (§6.5), logged as
   `[ts] tspkg: <player>: <id> <version> <state> [reason]`, and the plugin API event
-  `client_plugin_state(edict, id, state)` (with the API version after 8, as `offer_client_plugin`).
+  `client_plugin_state(player, id, version, state, reason)` (version 8, #321; the spec's
+  `(edict, id, state)` plus the answer's version and reason).
 
 ### 6.2 The `TSPkg` user message
 
@@ -974,8 +974,9 @@ op 5 port_version   id ("tsrs"), version requirement (≤ 96), string url (≤ 2
   the client has answered every offer, so a player who is approving and downloading isn't
   kicked mid-download. Required-plugin kicks wait for the download to finish, up to
   `sv_plugin_download_time` (default 300 s).
-* **The plugin API** gets the event `client_plugin_list(edict, plugins)`, and
-  `client_plugin_version(edict, id)`.
+* **The plugin API** gets the event `client_plugin_list(player, plugins, count)` (when the
+  list is complete, once per connection), and `client_plugin_version(player, id, buf, len)` (the
+  answer `loaded`, else the list, else `have`). Built in version 8 (#321, plugin-api.md §13).
 * **Logs:** the server logs each refusal, suspension and kick with the player, the plugin, the
   version and the rule that matched.
 * **Built (#302).** Server: `ts_server::plugin_offers::enforce` (engine-free, unit-tested),
@@ -1005,8 +1006,8 @@ op 5 port_version   id ("tsrs"), version requirement (≤ 96), string url (≤ 2
     chooses "Later" on the restart card is kicked then.
   * **Logs:** `[ts] tspkg: <player>: <id> <version>: <rule>: suspend|kick|require <req>`, the op
     sent (`block webview <0.2.0 (suspend) to <player>`), the answer, and `kicking <player>: ...`.
-  * The plugin API's `client_plugin_list` and `client_plugin_version` wait for the API version
-    after 8, with `offer_client_plugin` and `client_plugin_state` (#321).
+  * The plugin API's `client_plugin_list` and `client_plugin_version`, with
+    `offer_client_plugin` and `client_plugin_state`, are in version 8 (#321).
 
   Client: `ts_client::plugins::offers::enforce` decides, `offers` acts:
   * **Op 4 `suspend`:** every loaded plugin the block names (id, `manual:<name>` or `manual:*`,
@@ -1322,7 +1323,8 @@ open question 3.
 2. Client: the loader with start-up verification and the SDL prompt, hand-installed libraries,
    `cl_plugins_*` commands, `xtask plugin-approve`. Depends on the client extension API.
 3. Server: `TSPkg` (sent only to `_tsrs` clients), `plugin_offers.toml`, `sv_plugin_offer`, `tspkg` replies
-   and the plugin API additions. Built (#298), but for the plugin API additions (#304).
+   and the plugin API additions. Built (#298); the plugin API additions are in version 8
+   (`client_port_version` #304, the offers and events #321).
 4. Client: the offer flow, downloads, the in-game cards and their safeguards (§7.3), late
    loading, e2e. Built (#299).
 5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`. Also:
@@ -1340,8 +1342,8 @@ open question 3.
      arguments, `tsrs_reconnect` and its password card, self-relaunch where its tests pass, the
      quit-and-inform card and `.reconnect`, and the relaunch e2e (§11 e2e 6) on every root.
    * plugins: `match`, `[[block]]` and `[policy]`, `tspkg list`, ops 3 and 4, suspend and
-     resume, restart and reconnect, and the plugin API events. Built (#302), but for the plugin
-     API events (#321).
+     resume, restart and reconnect, and the plugin API events. Built (#302); the plugin API
+     events are in version 8 (#321).
 
 ## 16. Decisions made building milestone 2 (#297)
 

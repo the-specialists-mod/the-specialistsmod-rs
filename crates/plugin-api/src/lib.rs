@@ -53,8 +53,10 @@
 //!   added plugin identities for metamod plugins ([`PluginApi::attach_plugin`],
 //!   [`PluginApi::detach_plugin`], listeners they own), the kung-fu and superjump
 //!   [`player_flag`]s and [`FrameInfo::team_scores`] (§12); version 8 added the `TSExt` channel
-//!   messages to the port client's extensions ([`PluginApi::ext_message`]) and the port client's
-//!   version ([`PluginApi::client_port_version`]) (§13).
+//!   messages to the port client's extensions ([`PluginApi::ext_message`]), the port client's
+//!   version ([`PluginApi::client_port_version`]), and the client plugin offers
+//!   ([`PluginApi::offer_client_plugin`], [`PluginApi::client_plugin_version`],
+//!   [`Plugin::client_plugin_state`], [`Plugin::client_plugin_list`]) (§13).
 //!
 //! # Private data
 //! An edict's private data is the server's block, not a C++ object. Since version 5 the server
@@ -298,6 +300,60 @@ pub struct Plugin {
     /// or [`entity::GUN`] (a dropped gun; `id` its TS id). A temporary power-up or dropped gun is
     /// removed by then, so `entity` may be free. Deferred until the player is back in its slot.
     pub item_pickup: Option<extern "C" fn(player: c_int, entity: c_int, kind: c_int, id: c_int)>,
+
+    // ---- version 8: client plugins ------------------------------------------------------------------
+    /// A `tspkg <id> <version> <state> [reason]` answer the server took from a client
+    /// (docs/implementation/client-plugins.md §6.5): to an offer (the API's
+    /// [`PluginApi::offer_client_plugin`], `sv_plugin_offer` or the offers at `ClientPutInServer`),
+    /// to a `block` (`suspended`) or to op 5 (`id` "tsrs"). `state` is a [`plugin_state`] value;
+    /// `reason` is "" when the client gave none. The strings live for the call. Answers the server
+    /// ignores (ids it didn't send, over the rate limit) aren't reported. Runs at once, from the
+    /// client's command (after [`Plugin::client_command`], which sees `tspkg` first).
+    pub client_plugin_state:
+        Option<unsafe extern "C" fn(player: c_int, id: *const c_char, version: *const c_char, state: c_int, reason: *const c_char)>,
+    /// A client's `tspkg list` is complete (its closing line came, client-plugins.md §13.2): the
+    /// `count` plugins it has loaded, `plugins[..count]` (a plugin id or `manual:<name>`, and the
+    /// version), valid for the call. Once per connection (so again at each map: the map change's
+    /// reconnect starts the list again); a client with no plugins gives `count` 0. A list still
+    /// incomplete when the grace period ends isn't reported ([`PluginApi::client_plugin_version`]
+    /// answers from what came).
+    pub client_plugin_list: Option<unsafe extern "C" fn(player: c_int, plugins: *const ClientPlugin, count: c_int)>,
+}
+
+/// One loaded plugin of [`Plugin::client_plugin_list`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ClientPlugin {
+    /// A plugin id (`[a-z0-9_-]{1,32}`) or `manual:<name>` (a hand-installed library).
+    pub id: *const c_char,
+    /// Its version as the client reported it (`0.0.0` for a hand-installed library).
+    pub version: *const c_char,
+}
+
+/// [`Plugin::client_plugin_state`]'s `state`: the `tspkg` states (client-plugins.md §6.5, §13.3),
+/// in that order.
+pub mod plugin_state {
+    use core::ffi::c_int;
+    /// Installed and approved already (the same manifest).
+    pub const HAVE: c_int = 0;
+    /// The card is shown.
+    pub const OFFERED: c_int = 1;
+    pub const DOWNLOADING: c_int = 2;
+    /// Downloaded and approved, not loaded yet.
+    pub const INSTALLED: c_int = 3;
+    pub const LOADED: c_int = 4;
+    /// The player said no ("Not now" or "Never"; the server isn't told which).
+    pub const DENIED: c_int = 5;
+    /// The player's client blocks it (the plugin or its publisher).
+    pub const BLOCKED: c_int = 6;
+    /// This client can't run it (another platform, a newer API).
+    pub const UNSUPPORTED: c_int = 7;
+    /// The download or a check failed.
+    pub const FAILED: c_int = 8;
+    /// Suspended on this server, as a `block` asked.
+    pub const SUSPENDED: c_int = 9;
+    /// It needs a restart (an update of a loaded plugin, or op 5's port update).
+    pub const RESTART: c_int = 10;
 }
 
 /// A player's damage as [`Plugin::damage`] reports it (version 6).
@@ -438,6 +494,8 @@ impl Plugin {
         entity_touch: None,
         weapon_fired: None,
         item_pickup: None,
+        client_plugin_state: None,
+        client_plugin_list: None,
     };
 }
 
@@ -1265,6 +1323,24 @@ pub struct PluginApi {
     /// from before #303 sent first), [`NOT_PLAYER`] for no connected player there
     /// (client-plugins.md §13.1).
     pub client_port_version: unsafe extern "C" fn(player: c_int, buf: *mut c_char, len: c_int) -> c_int,
+    /// Offers client plugin `id` now, as `sv_plugin_offer` does (client-plugins.md §6.1): one
+    /// `TSPkg` offer of the `plugin_offers.toml` entry `id`, which must have passed the map's
+    /// package checks (`sv_plugin_offers` lists them), to `player`, or with `player` 0 to every
+    /// client that hooks `TSPkg`. The client answers through [`Plugin::client_plugin_state`].
+    /// Returns the number of clients it went to (1 for a player; any number for 0), 0 also when
+    /// the offer can't be sent now (a relative `url` while `sv_downloadurl` is empty or isn't
+    /// `http(s)://`; the server log says why); or [`NOT_PLAYER`] (no connected player there),
+    /// [`INVALID`] (NULL `id`, or no checked offer of it) or [`UNSUPPORTED`] (that player's client
+    /// doesn't hook `TSPkg`: TS 3.0's, a port client before 3.0.9, a bot, an HLTV proxy).
+    pub offer_client_plugin: unsafe extern "C" fn(player: c_int, id: *const c_char) -> c_int,
+    /// The version of client plugin `id` (a plugin id or `manual:<name>`) a player's client has
+    /// loaded, as far as the server knows (client-plugins.md §13.3): its answer `loaded`, else its
+    /// `tspkg list`, else its answer `have` to an offer (an approved manifest it loads at once).
+    /// Written to `buf` (NUL-terminated, cut to fit); returns its length, 0 (and "") when the
+    /// server doesn't know it loaded. [`NOT_PLAYER`] (no connected player there), [`INVALID`]
+    /// (NULL `id`) or [`UNSUPPORTED`] (a client that doesn't hook `TSPkg`, and so runs no client
+    /// plugins the server can learn of).
+    pub client_plugin_version: unsafe extern "C" fn(player: c_int, id: *const c_char, buf: *mut c_char, len: c_int) -> c_int,
 }
 
 /// The longest [`PluginApi::ext_message`] channel, in bytes.
@@ -1290,6 +1366,15 @@ mod tests {
         assert_eq!(library_suffix(true, true), "_amd64.dll"); // mp_amd64.dll
         assert_eq!(library_suffix(false, false), "_i386.so"); // ts_i386.so
         assert_eq!(library_suffix(false, true), "_amd64.so"); // ts_amd64.so
+    }
+
+    #[test]
+    fn plugin_states_are_the_protocols_order() {
+        use plugin_state::*;
+        assert_eq!(
+            [HAVE, OFFERED, DOWNLOADING, INSTALLED, LOADED, DENIED, BLOCKED, UNSUPPORTED, FAILED, SUSPENDED, RESTART],
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
     }
 
     #[test]

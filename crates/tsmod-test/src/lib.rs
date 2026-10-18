@@ -30,9 +30,13 @@
 //! Every frame its bots' kung-fu and superjump flags must match `player_info`, and `frame_info`'s
 //! team scores `game_state`'s.
 //!
-//! Plugin API version 8: `ext_message` and `client_port_version` on a bot (not a port client) and
-//! with bad arguments. On a listen server with the port client (`cargo xtask client-plugins`) it
-//! answers the stub client extension's `tsext_echo` command on the `TSExt` channel `test`.
+//! Plugin API version 8: `ext_message`, `client_port_version`, `offer_client_plugin` and
+//! `client_plugin_version` on a bot (not a port client) and with bad arguments. On a listen server
+//! with the port client (`cargo xtask client-plugins`) it answers the stub client extension's
+//! `tsext_echo` command on the `TSExt` channel `test`. With the port client on a dedicated server
+//! (`cargo xtask tspkg`) it offers on the client's `tsmod_test_offer <id>` (`offer_client_plugin`)
+//! and logs every `client_plugin_state` and `client_plugin_list` event, with what
+//! `client_plugin_version` says then.
 //!
 //! The plugin keeps its state behind a mutex, which it never holds while calling the API: the
 //! server calls back into the plugin from inside API calls (`create_bot` spawns the bot).
@@ -45,9 +49,9 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_plugin_api::{
-    BotBackend, BotCmd, BotCmdResult, DEFERRED, DamageEvent, EXISTS, EntityInfo, FrameInfo, GameState, HamArg, HamCall, INVALID, ItemInfo,
-    KillInfo, LoadInfo, NO_PLUGIN, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PlayerSnapshot, Plugin, PluginApi, PluginId, UNSUPPORTED,
-    VERSION, WeaponEntry, cmd, cmd_event, entity, ext_flag, ham, item, log, player_flag, powerup, stunt,
+    BotBackend, BotCmd, BotCmdResult, ClientPlugin, DEFERRED, DamageEvent, EXISTS, EntityInfo, FrameInfo, GameState, HamArg, HamCall,
+    INVALID, ItemInfo, KillInfo, LoadInfo, NO_PLUGIN, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PlayerSnapshot, Plugin, PluginApi,
+    PluginId, UNSUPPORTED, VERSION, WeaponEntry, cmd, cmd_event, entity, ext_flag, ham, item, log, player_flag, powerup, stunt,
 };
 
 /// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots, and of the
@@ -305,6 +309,8 @@ const DESCRIPTOR: Plugin = Plugin {
     player_powerup: Some(player_powerup),
     melee_attack: Some(melee_attack),
     kill_scored: Some(kill_scored),
+    client_plugin_state: Some(client_plugin_state),
+    client_plugin_list: Some(client_plugin_list),
     ..Plugin::EMPTY
 };
 
@@ -819,6 +825,8 @@ fn probe(a: &PluginApi, idx: c_int, i: &PlayerInfo) -> bool {
     check("private_size", (a.private_size)(idx) > 0 && (a.private_size)(-1) == NOT_PLAYER);
     check("ext_message", ext_message_checks(a, idx));
     check("client_port_version", client_port_version_checks(a, idx));
+    check("offer_client_plugin", offer_client_plugin_checks(a, idx));
+    check("client_plugin_version", client_plugin_version_checks(a, idx));
     // A held double fire rate (the cheat; the server config turns `sv_cheats` on), then used:
     // `player_powerup` with its bit.
     // SAFETY: NUL-terminated commands for the calls.
@@ -865,6 +873,110 @@ fn client_port_version_checks(a: &PluginApi, bot: c_int) -> bool {
     let (n, none) =
         unsafe { ((a.client_port_version)(bot, buf.as_mut_ptr(), buf.len() as c_int), (a.client_port_version)(0, buf.as_mut_ptr(), 0)) };
     n == 0 && buf[0] == 0 && none == NOT_PLAYER
+}
+
+/// `PluginApi::offer_client_plugin` (version 8) on a server without offers: every id is unknown
+/// (`INVALID`, which comes before the bot's `UNSUPPORTED`), and slot -1 isn't a player.
+fn offer_client_plugin_checks(a: &PluginApi, bot: c_int) -> bool {
+    // SAFETY: NUL-terminated ids, or NULL.
+    let (unknown, null, all, nobody) = unsafe {
+        (
+            (a.offer_client_plugin)(bot, c"tsmod_test_none".as_ptr()),
+            (a.offer_client_plugin)(bot, std::ptr::null()),
+            (a.offer_client_plugin)(0, c"tsmod_test_none".as_ptr()),
+            (a.offer_client_plugin)(-1, c"tsmod_test_none".as_ptr()),
+        )
+    };
+    let ok = unknown == INVALID && null == INVALID && all == INVALID && nobody == NOT_PLAYER;
+    if !ok {
+        say(log::ERROR, &format!("offer_client_plugin: {unknown} {null} {all} {nobody}"));
+    }
+    ok
+}
+
+/// `PluginApi::client_plugin_version` (version 8): a bot runs no client plugins (`UNSUPPORTED`),
+/// NULL is `INVALID`, slot 0 isn't a player; the buffer isn't touched for any of them.
+fn client_plugin_version_checks(a: &PluginApi, bot: c_int) -> bool {
+    let mut buf = [b'x' as c_char; 16];
+    // SAFETY: NUL-terminated ids or NULL; `buf` is writable for its length.
+    let (on_bot, null, nobody) = unsafe {
+        (
+            (a.client_plugin_version)(bot, c"webview".as_ptr(), buf.as_mut_ptr(), buf.len() as c_int),
+            (a.client_plugin_version)(bot, std::ptr::null(), buf.as_mut_ptr(), buf.len() as c_int),
+            (a.client_plugin_version)(0, c"webview".as_ptr(), buf.as_mut_ptr(), buf.len() as c_int),
+        )
+    };
+    let ok = on_bot == UNSUPPORTED && null == INVALID && nobody == NOT_PLAYER && buf[0] == b'x' as c_char;
+    if !ok {
+        say(log::ERROR, &format!("client_plugin_version: {on_bot} {null} {nobody}"));
+    }
+    ok
+}
+
+/// What `client_plugin_version` says about `id` for `player`: the version, `-` for none, or the
+/// status in parentheses.
+fn loaded_version(a: &PluginApi, player: c_int, id: &CStr) -> String {
+    let mut buf = [0 as c_char; 32];
+    // SAFETY: a NUL-terminated id and a writable buffer.
+    let n = unsafe { (a.client_plugin_version)(player, id.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int) };
+    match n {
+        0 => "-".into(),
+        // SAFETY: the server NUL-terminated `buf`.
+        n if n > 0 => unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned(),
+        code => format!("({code})"),
+    }
+}
+
+/// `tsmod_test_offer <id>` from a port client (`cargo xtask tspkg`): offers `id` through the API,
+/// and an id nobody offers. Logs `offer_client_plugin #<player> <id>: <sent> unknown=<rc>`.
+fn offer_command(a: &PluginApi, player: c_int, id: &CStr) {
+    // SAFETY: NUL-terminated ids for the calls.
+    let (sent, unknown) =
+        unsafe { ((a.offer_client_plugin)(player, id.as_ptr()), (a.offer_client_plugin)(player, c"tsmod_test_none".as_ptr())) };
+    say(log::INFO, &format!("offer_client_plugin #{player} {}: {sent} unknown={unknown}", id.to_string_lossy()));
+}
+
+/// `ts_plugin_api::plugin_state`'s names (the `tspkg` words), by value.
+const STATE_NAMES: [&str; 11] =
+    ["have", "offered", "downloading", "installed", "loaded", "denied", "blocked", "unsupported", "failed", "suspended", "restart"];
+
+/// A state for the log: its `tspkg` word, else the number.
+fn state_name(state: c_int) -> String {
+    usize::try_from(state).ok().and_then(|i| STATE_NAMES.get(i)).map_or_else(|| state.to_string(), |n| (*n).to_owned())
+}
+
+/// Version 8: a client's `tspkg` answer. Logs `client_plugin_state #<player> <id> <version>
+/// <state> [<reason>] loaded=<client_plugin_version>`.
+unsafe extern "C" fn client_plugin_state(player: c_int, id: *const c_char, version: *const c_char, state: c_int, reason: *const c_char) {
+    let (Some(a), false) = (api(), id.is_null() || version.is_null() || reason.is_null()) else { return };
+    // SAFETY: the server passes NUL-terminated strings that live for the call.
+    let (id, version, reason) = unsafe { (CStr::from_ptr(id), CStr::from_ptr(version), CStr::from_ptr(reason)) };
+    let reason = if reason.is_empty() { String::new() } else { format!(" [{}]", reason.to_string_lossy()) };
+    let loaded = loaded_version(a, player, id);
+    let (id, version) = (id.to_string_lossy(), version.to_string_lossy());
+    say(log::INFO, &format!("client_plugin_state #{player} {id} {version} {}{reason} loaded={loaded}", state_name(state)));
+}
+
+/// Version 8: a client's `tspkg list` is complete. Logs `client_plugin_list #<player>: <n>
+/// [<id>@<version> ...] versions agree|differ`: whether `client_plugin_version` agrees with every
+/// entry.
+unsafe extern "C" fn client_plugin_list(player: c_int, plugins: *const ClientPlugin, count: c_int) {
+    let Some(a) = api() else { return };
+    let entries: &[ClientPlugin] = match usize::try_from(count) {
+        // SAFETY: the server passes `count` entries that live for the call.
+        Ok(n) if n > 0 && !plugins.is_null() => unsafe { std::slice::from_raw_parts(plugins, n) },
+        _ => &[],
+    };
+    let mut listed = Vec::new();
+    let mut agree = true;
+    for p in entries.iter().filter(|p| !p.id.is_null() && !p.version.is_null()) {
+        // SAFETY: as above: NUL-terminated strings for the call.
+        let (id, version) = unsafe { (CStr::from_ptr(p.id), CStr::from_ptr(p.version)) };
+        agree &= loaded_version(a, player, id) == version.to_string_lossy();
+        listed.push(format!("{}@{}", id.to_string_lossy(), version.to_string_lossy()));
+    }
+    let versions = if agree { "agree" } else { "differ" };
+    say(log::INFO, &format!("client_plugin_list #{player}: {count} [{}] versions {versions}", listed.join(" ")));
 }
 
 /// `tsext_echo <text>` from a port client's extension (the stub client extension's
@@ -941,6 +1053,13 @@ unsafe extern "C" fn client_command(player: c_int, argc: c_int, argv: *const *co
         let text = if argc > 1 { unsafe { CStr::from_ptr(*argv.add(1)) }.to_string_lossy().into_owned() } else { String::new() };
         if let Some(a) = api() {
             tsext_echo(a, player, &text);
+        }
+        return 1;
+    }
+    if cmd == c"tsmod_test_offer" {
+        if let (Some(a), true) = (api(), argc > 1) {
+            // SAFETY: as above.
+            offer_command(a, player, unsafe { CStr::from_ptr(*argv.add(1)) });
         }
         return 1;
     }
@@ -1215,6 +1334,17 @@ mod tests {
         assert!(DESCRIPTOR.melee_attack.is_some() && DESCRIPTOR.kill_scored.is_some());
         assert!(DESCRIPTOR.damage.is_some() && DESCRIPTOR.entity_touch.is_some());
         assert!(DESCRIPTOR.weapon_fired.is_some() && DESCRIPTOR.item_pickup.is_some());
+        assert!(DESCRIPTOR.client_plugin_state.is_some() && DESCRIPTOR.client_plugin_list.is_some());
+    }
+
+    #[test]
+    fn state_names_follow_the_api() {
+        use ts_plugin_api::plugin_state::*;
+        assert_eq!(state_name(HAVE), "have");
+        assert_eq!(state_name(DENIED), "denied");
+        assert_eq!(state_name(RESTART), "restart");
+        assert_eq!(state_name(11), "11");
+        assert_eq!(state_name(-1), "-1");
     }
 
     #[test]

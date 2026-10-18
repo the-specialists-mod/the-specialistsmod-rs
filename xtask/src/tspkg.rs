@@ -13,7 +13,10 @@
 //!      `TSPKG_SINCE`) and `sv_plugin_required_kick 1`: the server offers a signed stub package
 //!      and refuses an offer whose hash doesn't match; the client prints the offer with its URL
 //!      built from `sv_downloadurl`; its `tspkg ... offered` is logged, and `denied` to the
-//!      required offer kicks it with the plugin named.
+//!      required offer kicks it with the plugin named. The stub server plugin `tsmod_test` is
+//!      installed for this part: the client's `tsmod_test_offer` makes it offer through the plugin
+//!      API (`offer_client_plugin`), and it logs the `client_plugin_state` and
+//!      `client_plugin_list` events with what `client_plugin_version` says (issue #321).
 //!   2. Op 5: with `sv_client_version ">=99.0.0"` the port client is let in, told the version
 //!      by `TSPkg`, and kicked after `sv_plugin_check_time 3` with the `[tsrs:...]` tag.
 //!   3. Without `ts_dev_tspkg`, the same offers reach no client (this build is below
@@ -162,6 +165,22 @@ impl Ctx {
         if !c.status().expect("cargo").success() {
             std::process::exit(1);
         }
+        // The stub server plugin (part 1), for every Linux root's server library.
+        let mut built = Vec::new();
+        for t in roots.iter().filter(|r| r.os == Os::Linux && r.exists()).map(Root::target) {
+            if built.contains(&t.triple) {
+                continue;
+            }
+            built.push(t.triple);
+            let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
+            c.current_dir(&self.repo).args(["build", "-p", "tsmod-test", "--target", t.triple]);
+            if self.profile != crate::Profile::Dev {
+                c.arg("--release");
+            }
+            if !c.status().expect("cargo").success() {
+                std::process::exit(1);
+            }
+        }
         let dl = match FastDl::start() {
             Ok(dl) => dl,
             Err(e) => {
@@ -198,11 +217,19 @@ impl Ctx {
         let dev = format!("sv_cheats 1\nts_dev_tspkg 1\nsv_downloadurl \"{DOWNLOAD_URL}\"");
 
         say!("== {}: offers and tspkg replies (port {port})", root.name);
-        if let Some(server) = self.version_server(root, port, &format!("{dev}\nsv_plugin_required_kick 1")) {
+        let dlls = gamedir.join("dlls");
+        let t = root.target();
+        crate::copy(&self.test_plugin_artifact(&t), &dlls.join(format!("tsmod_test{}", crate::plugins::suffix(&t))));
+        let server = self.version_server(root, port, &format!("{dev}\nsv_plugin_required_kick 1"));
+        if let Some(server) = server {
             let w = format!("{}\n", "wait;".repeat(20)).repeat(10);
-            let middle = format!("{w}cmd tspkg {STUB} {STUB_VERSION} offered\n{w}cmd tspkg {STUB} {STUB_VERSION} denied\n{w}");
+            let middle = format!(
+                "{w}cmd tsmod_test_offer {STUB}\n{w}cmd tspkg {STUB} {STUB_VERSION} offered\n{w}cmd tspkg list\n{w}\
+                 cmd tspkg {STUB} {STUB_VERSION} denied\n{w}"
+            );
             let client = self.fwgs_client_script(root, fwgs, port, "tspkg-offers", &middle);
             let log = self.version_server_stop(root, server);
+            crate::plugins::remove_fixtures(&dlls);
             checks.push((
                 format!("1: the server offers {STUB}"),
                 log.contains(&format!("[ts] tspkg: offering {STUB} {STUB_VERSION} (signed")),
@@ -220,7 +247,9 @@ impl Ctx {
                 log.contains("kicking") && log.contains("requires the client plugin xtask stub 0.1.0 (https://example.org/xtask-stub)"),
             ));
             checks.push(("1: no panic".into(), !client.contains("PANIC") && !log.contains("PANIC")));
+            checks.extend(plugin_api_checks(&log));
         } else {
+            crate::plugins::remove_fixtures(&dlls);
             checks.push(("1: the server answered".into(), false));
         }
 
@@ -286,9 +315,39 @@ impl Ctx {
     }
 }
 
+/// Part 1's plugin API checks (issue #321) on the server's log: the stub plugin's lines.
+fn plugin_api_checks(log: &str) -> Vec<(String, bool)> {
+    let line = |a: &str, b: &str| log.lines().any(|l| l.contains("[tsmod_test] ") && l.contains(a) && l.contains(b));
+    vec![
+        ("1: offer_client_plugin offers through the plugin API".into(), line("offer_client_plugin #", &format!("{STUB}: 1 unknown=-2"))),
+        (
+            "1: client_plugin_state reports the client's \"offered\"".into(),
+            line("client_plugin_state #", &format!("{STUB} {STUB_VERSION} offered")),
+        ),
+        (
+            "1: client_plugin_state reports the refusal before the kick".into(),
+            line("client_plugin_state #", &format!("{STUB} {STUB_VERSION} denied loaded=-")),
+        ),
+        ("1: client_plugin_list reports the complete list".into(), line("client_plugin_list #", "versions agree")),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_plugin_api_checks_read_the_stubs_lines() {
+        let log = format!(
+            "[tsmod_test] offer_client_plugin #1 {STUB}: 1 unknown=-2\n\
+             [tsmod_test] client_plugin_state #1 {STUB} {STUB_VERSION} offered loaded=-\n\
+             [tsmod_test] client_plugin_list #1: 0 [] versions agree\n\
+             [tsmod_test] client_plugin_state #1 {STUB} {STUB_VERSION} denied loaded=-\n"
+        );
+        assert!(plugin_api_checks(&log).iter().all(|(_, ok)| *ok));
+        let bad = log.replace("1 unknown", "0 unknown").replace("agree", "differ");
+        assert_eq!(plugin_api_checks(&bad).iter().filter(|(_, ok)| !ok).count(), 2);
+    }
 
     #[test]
     fn plugin_offer_writes_the_siblings_and_the_entry() {

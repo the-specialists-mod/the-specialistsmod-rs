@@ -225,6 +225,19 @@ impl PluginHooks for Loaded {
             f(player, entity, kind, id);
         }
     }
+    fn client_plugin_state(&self, player: i32, id: &CStr, version: &CStr, state: i32, reason: &CStr) {
+        if let Some(f) = self.desc.client_plugin_state {
+            // SAFETY: the three strings are NUL-terminated and live for the call.
+            unsafe { f(player, id.as_ptr(), version.as_ptr(), state, reason.as_ptr()) };
+        }
+    }
+    fn client_plugin_list(&self, player: i32, plugins: &[ts_plugin_api::ClientPlugin]) {
+        if let Some(f) = self.desc.client_plugin_list {
+            // SAFETY: `plugins` holds `len` entries whose strings live for the call
+            // (`ts_server::plugins::client_plugin_list`).
+            unsafe { f(player, plugins.as_ptr(), plugins.len() as c_int) };
+        }
+    }
     fn wants_melee_attack(&self) -> bool {
         self.desc.melee_attack.is_some()
     }

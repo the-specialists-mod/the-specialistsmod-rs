@@ -278,7 +278,10 @@ of the map's entities.
   against `player_info`), with `frame_info`'s team scores checked against `game_state`); plugin
   API version 8, #294/#304: ext_message (a bot isn't a port client, a broadcast reaches nobody, a
   bad channel, flag or length and a NULL payload are refused, the longest payload fits) and
-  client_port_version (a bot has none; slot 0 isn't a player), no `FAIL`, no crash. The fixtures are removed
+  client_port_version (a bot has none; slot 0 isn't a player); #321: offer_client_plugin (an id
+  with no checked offer and NULL are refused before the bot's client, slot -1 isn't a player) and
+  client_plugin_version (a bot runs no client plugins, NULL is refused, slot 0 isn't a player), no
+  `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
 * Native parity: `cargo xtask bots`, `play`, `test` unchanged.
 
