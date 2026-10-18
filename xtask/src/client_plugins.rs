@@ -315,7 +315,9 @@ fn script() -> String {
     cfg += &format!("ts_tp 2 0 -1200 60 270 0\n{}ts_tp 1 0 -1344 60 90 0\n{}ts_face 1 2\n{}", secs(0.5), secs(1.0), secs(0.5));
     // Minor 1: `TSExt` both ways (with the bot in, for the server's "not a port client"), the
     // command hooks on the port's `special` and its `_special`, the chat hooks.
-    cfg += &format!("ts_dev_extlog 1\necho XTASK: tsext\ntsext_test_tsext\n{}", secs(1.0));
+    // This build reports the last release's version, below `TSPKG_SINCE`: `ts_dev_tspkg 1` lets
+    // `TSExt` reach it.
+    cfg += &format!("ts_dev_tspkg 1\nts_dev_extlog 1\necho XTASK: tsext\ntsext_test_tsext\n{}", secs(1.0));
     for arm in ["block", "pass", "rename"] {
         cfg += &format!("tsext_test_arm {arm}\nspecial\n{}", secs(0.5));
     }

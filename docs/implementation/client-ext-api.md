@@ -219,7 +219,8 @@ The gaps against the webview spec (corpses, ducking, GLES state) are issue #306.
   can't re-run the engine's tokenised command with other arguments. Its `chat_send` (`say`,
   `say_team`) is the engine's command, not the port's, so it doesn't reach `command_pre` either.
 * **No raw `message_begin(TSExt)` guard on the server.** The webview spec §4.2 has the server
-  refuse an AMX Mod X `message_begin` of `TSExt` to clients without `_tsrs`. AMX Mod X writes
+  refuse an AMX Mod X `message_begin` of `TSExt` to clients without `_tsrs` (and the port's own
+  gate also refuses port clients before 3.0.9, which don't hook it). AMX Mod X writes
   messages straight to the engine, past the game library, so only a metamod hook can (filed as
   tsmod-amxx-rs#22). The plugin API's `ext_message` checks `_tsrs` itself.
 * **The port's hold timeout** is 1 s (`HOLD_MS`), a safety net over the webview's own 500 ms cap
@@ -273,9 +274,12 @@ NUL: 184 bytes on `webview`, 176 on a 15-byte channel (the webview spec's figure
 * **Server:** plugin API version 8's `ext_message(player, channel, data, len, flags)`
   ([plugin-api.md](plugin-api.md) §13) sends one message to a player, or with player 0 to every
   port client, `MSG_ONE` each (`ext_flag::UNRELIABLE` for `MSG_ONE_UNRELIABLE`). Only clients
-  whose userinfo has `_tsrs` get it: TS 3.0's client doesn't hook `TSExt`. A player who isn't a
-  port client (TS 3.0's client, a bot, HLTV) is `UNSUPPORTED`; a channel or payload that doesn't
-  fit is `INVALID`.
+  that hook `TSExt` get it, by the same gate as `TSPkg` (client-plugins.md §12): a `_tsrs`
+  version at or above `port::TSPKG_SINCE` (3.0.9), or any readable one with `ts_dev_tspkg 1` and
+  `sv_cheats 1` (builds between releases report the last release's version). TS 3.0's client
+  and port clients up to 3.0.8 don't hook it. A player whose client doesn't (TS 3.0's client, an
+  older port client, a bot, HLTV) is `UNSUPPORTED`; a channel or payload that doesn't fit is
+  `INVALID`.
 * **No chunking in the port.** One message is one delivery, so a server can also send `TSExt`
   itself (AMX Mod X's `message_begin(MSG_ONE, get_user_msgid("TSExt"))`). A longer body is the
   channel's protocol to split: the webview's `op, msg_id, chunk` header (its spec §8.1).

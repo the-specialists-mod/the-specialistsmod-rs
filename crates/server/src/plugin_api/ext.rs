@@ -3,8 +3,12 @@
 //! and `PluginApi::client_port_version` (issue #304, client-plugins.md §13.1).
 //!
 //! TS 3.0's client doesn't hook `TSExt` and a GoldSrc client can fail on a message it hasn't
-//! hooked, so only clients whose userinfo carries `_tsrs` get it (client-plugins.md §12). The
-//! userinfo is read at each send, as `ClientConnect` reads it (`gameplay::with_connecting_client`).
+//! hooked, so only clients that hook it get it: a `_tsrs` version at or above
+//! `port::TSPKG_SINCE`, the first release whose client hooks the port's messages (`TSExt` and
+//! `TSPkg` came together), the same gate as `TSPkg`'s (`plugin_offers::hooks_tspkg`, with its
+//! `ts_dev_tspkg` dev aid; client-plugins.md §12). Port clients up to 3.0.8 carry `_tsrs` but hook
+//! neither. The userinfo is read at each send, as `ClientConnect` reads it
+//! (`gameplay::with_connecting_client`).
 
 use super::Game;
 use crate::gameplay::{ConnectingClient, with_connecting_client};
@@ -25,9 +29,9 @@ pub fn version_of(c: ConnectingClient) -> Result<String, c_int> {
     }
 }
 
-/// True for a connected player whose client is the port's (it can take `TSExt`).
+/// True for a connected player whose client hooks `TSExt`: the port's, from `port::TSPKG_SINCE`.
 fn is_port_client(e: *mut edict_t) -> bool {
-    with_connecting_client(e, |c| matches!(c, ConnectingClient::Port(_)))
+    crate::plugin_offers::hooks_tspkg(e)
 }
 
 /// `PluginApi::client_port_version`.

@@ -729,7 +729,7 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
 
   Original clients never get either message from the port's own code, and design.md §2's
   contract holds. `TSExt` is built (#294, client-ext-api.md §10): the plugin API's `ext_message`
-  sends it only to `_tsrs` clients. A raw AMX Mod X `message_begin` of `TSExt` goes past the game
+  sends it only to clients that hook it, by `TSPkg`'s gate (the same release hooks both). A raw AMX Mod X `message_begin` of `TSExt` goes past the game
   library, so it is the AMX Mod X module's to guard (tsmod-amxx-rs#22).
 * The registration order of TS's 64 messages doesn't change. New messages are appended after
   them in `shared::protocol::MESSAGES` (from `shared::protocol::TS_MESSAGES`): `TSExt` first, then
