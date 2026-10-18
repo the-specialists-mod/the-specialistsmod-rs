@@ -21,6 +21,9 @@ serde = { version = "1", features = ["derive"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 # Client plugin packages, the approval store and verification (crates/plugin-pkg, issue #297).
 plugin-pkg = { path = "../plugin-pkg" }
+# Server offers (src/plugins/offers, issue #299; client-plugins.md §6.3): a blocking HTTP(S) client
+# on worker threads, rustls with the webpki roots and ring (open question 2), as tsmod-launcher has.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 
 # Tests only: the core's tests run the 3.0 plugin's movement and gun rules (its fixture's `pm`
 # and `gun`). The library never links a ruleset (docs/implementation/gameplay-plugins.md).

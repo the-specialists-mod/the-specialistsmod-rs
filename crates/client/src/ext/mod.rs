@@ -186,6 +186,19 @@ pub fn load_all(open: Open) {
     });
 }
 
+/// What [`load_all`] opened libraries with, for a plugin approved later (a server's offer,
+/// client-plugins.md §9); `None` before `Initialize`'s `load_all`.
+pub fn opener() -> Option<Open> {
+    with(|s| s.open)
+}
+
+/// Asks the gate again whether a plugin waits for some server (a server's offer approved one
+/// "on this server only" after start).
+pub fn refresh_server_wait() {
+    let wait = with_gate(|g| g.waits_for_server());
+    with(|s| s.server_wait = wait);
+}
+
 /// Asks the gate about one candidate and loads it if approved: also the entry point for a plugin
 /// approved after start (issue #297, client-plugins.md §9), which then gets `init` at once and
 /// `vid_init` if a map is loaded. False if it didn't load.

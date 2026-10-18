@@ -153,6 +153,19 @@ impl Ctx {
 
     /// [`Self::version_fwgs_client`], running `middle` (console lines) halfway through the wait.
     pub(crate) fn fwgs_client_script(&self, root: &Root, fwgs: &Root, port: u16, label: &str, middle: &str) -> String {
+        self.fwgs_client_script_env(root, fwgs, port, label, middle, &[])
+    }
+
+    /// [`Self::fwgs_client_script`] with `env` added to the client's environment.
+    pub(crate) fn fwgs_client_script_env(
+        &self,
+        root: &Root,
+        fwgs: &Root,
+        port: u16,
+        label: &str,
+        middle: &str,
+        env: &[(&str, String)],
+    ) -> String {
         let w = "wait;".repeat(20);
         let proto = if root.engine == Engine::Fwgs { "" } else { " gs" };
         let half = format!("{w}\n").repeat(20);
@@ -164,6 +177,7 @@ impl Ctx {
         let mut client = Command::new(fwgs.path.join("xash3d"))
             .current_dir(&fwgs.path)
             .args(["-game", "ts", "-dev", "2", "-windowed", "-width", "800", "-height", "600", "+exec", CLIENT_CFG])
+            .envs(env.iter().map(|(k, v)| (*k, v)))
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()

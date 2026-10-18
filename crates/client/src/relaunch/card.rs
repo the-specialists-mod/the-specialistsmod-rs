@@ -12,8 +12,9 @@ use super::plan::{Reason, Request};
 use super::reconnect::Reconnect;
 use goldsrc::platform::sdl::{Event, Key};
 
-/// The approving button is disabled for this long after the card appears.
-pub const CLICK_DELAY_MS: u64 = 2000;
+/// The approving button is disabled for this long after the card appears: the delay every
+/// approval shares (`crate::plugins::click::ARM_DELAY`, client-plugins.md §7.3).
+pub const CLICK_DELAY_MS: u64 = crate::plugins::click::ARM_DELAY.as_millis() as u64;
 /// The longest password the field takes (a cvar string the engines keep whole).
 pub const MAX_PASSWORD: usize = 63;
 

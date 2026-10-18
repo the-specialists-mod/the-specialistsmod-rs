@@ -9,10 +9,16 @@
 //! approval covers byte for byte, re-hashing anything a prompt stood in front of, and
 //! `verified_spawn` re-hashes each helper against the approval ([`plugin_pkg::Entry::check_file`]).
 //!
+//! A server's offers ([`offers`], issue #299) add plugins while the game runs: a click on an
+//! in-game card downloads, verifies and installs one, records its approval in the store and in
+//! the gate's state here, and loads it late.
+//!
 //! **Nothing here approves from the console** (§7.3, §8): the store is written only from a
-//! click in the start-up box (and by tsmod-launcher). `cl_plugins_list` and `cl_plugins_verify`
-//! only read.
+//! click in the start-up box or on an offer card (and by tsmod-launcher). `cl_plugins_list` and
+//! `cl_plugins_verify` only read; `cl_plugins_cancel` only stops downloads.
 
+pub mod click;
+pub mod offers;
 pub mod prompt;
 pub mod startup;
 
@@ -120,7 +126,12 @@ pub fn install() {
         None if prompt::sdl_available() => &mut sdl,
         None => &mut fallback,
     };
-    let out = startup::run(&dirs, &opts, Store::load(&dirs.store()), prompter, &header_ok);
+    let loaded = Store::load(&dirs.store());
+    // What an offer's install left behind (staging, set-aside directories, superseded versions).
+    if let (true, Ok((store, _))) = (opts.enabled, &loaded) {
+        offers::clean_at_start(&dirs.cl_plugins, store, platform);
+    }
+    let out = startup::run(&dirs, &opts, loaded, prompter, &header_ok);
     for l in out.lines.iter().chain(&fallback.lines) {
         say(l);
     }
@@ -252,15 +263,16 @@ pub fn relative(base: &Path, exe: &Path) -> Option<String> {
 /// `HUD_Init`: the cvars and the read-only commands.
 pub fn init() {
     use goldsrc::ext::render::FCVAR_ARCHIVE;
-    // Their start-up effect comes from config.cfg (read at Initialize); registered here so the
-    // engine keeps them archived. cl_plugins_download and cl_plugins_allow_unsigned are read by
-    // the server offers (#299).
+    // cl_plugins and cl_plugins_verify_log take effect at start, from config.cfg (read at
+    // Initialize); registered here so the engine keeps them archived. cl_plugins_download and
+    // cl_plugins_allow_unsigned are read when a server offers a plugin (`offers`, #299).
     Cvar::register(c"cl_plugins", c"1", FCVAR_ARCHIVE);
     Cvar::register(c"cl_plugins_download", c"1", FCVAR_ARCHIVE);
     Cvar::register(c"cl_plugins_allow_unsigned", c"0", FCVAR_ARCHIVE);
     Cvar::register(c"cl_plugins_verify_log", c"0", FCVAR_ARCHIVE);
     engine().add_command(c"cl_plugins_list", cmd_list);
     engine().add_command(c"cl_plugins_verify", cmd_verify);
+    offers::init();
 }
 
 /// `cl_plugins_list`: every plugin found at start, its approval and whether it loaded.

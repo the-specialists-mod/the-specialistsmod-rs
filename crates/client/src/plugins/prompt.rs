@@ -10,16 +10,17 @@
 //! * With neither (no SDL2, or the box fails), [`Fallback`] answers "Not now" and says how to
 //!   approve instead.
 
+pub use super::click::{ARM_DELAY, armed};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 /// The test hook's answers (debug builds only): `id=answer,...`, with `*` for the rest;
 /// answers `allow`, `later`, `later_all`, `never`.
 pub const HOOK_ENV: &str = "TSRS_DEV_PLUGIN_PROMPT";
 /// The test hook's record of each box, relative to the game directory (debug builds only).
 pub const HOOK_LOG_ENV: &str = "TSRS_DEV_PLUGIN_PROMPT_LOG";
-/// How long a box must be up before "Allow" counts (§7.3).
-pub const ARM_DELAY: Duration = Duration::from_secs(2);
 
 /// One box.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,11 +84,6 @@ pub fn buttons(p: &Prompt) -> Vec<(Answer, &'static str)> {
     }
     b.push((Answer::Never, "Never"));
     b
-}
-
-/// Whether an "Allow" given `shown` after the box appeared counts (§7.3).
-pub fn armed(shown: Duration) -> bool {
-    shown >= ARM_DELAY
 }
 
 /// The SDL message box.

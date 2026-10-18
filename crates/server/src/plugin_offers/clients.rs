@@ -65,6 +65,9 @@ pub struct Client {
     pub plugins: Vec<(String, String)>,
     pub plugins_complete: bool,
     pub notice: Option<PortNotice>,
+    /// Put in the server, and op 5 and the offers not sent yet: they go at the player's first
+    /// `PlayerPostThink` (`plugin_offers::client_ready`).
+    pub put_pending: bool,
     pub rate: RateLimit,
     rate_logged: bool,
 }

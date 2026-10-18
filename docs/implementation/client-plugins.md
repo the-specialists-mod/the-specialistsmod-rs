@@ -7,11 +7,11 @@ milestone 2 (issue #297): verification at every start, the start-up prompt, hand
 libraries, `[requires] port`, `scope = "server"` loading, the `cl_plugins*` cvars,
 `cl_plugins_list`, `cl_plugins_verify` and `cargo xtask plugin-approve`, in
 `crates/client/src/plugins/` (§16 lists what that build decided); the server's offers (§6.1, §6.2,
-§6.5, §12, op 5 of §13.1; `ts_server::plugin_offers`, `shared::protocol::tspkg`, issue #298), with
-the client only printing what it receives; the port client's version check (§13.1, issue #300);
-and the port side of restart and reconnect (§13.5, issue #301; the launcher side is
-tsmod-launcher #4 and #5). The client's offer flow and cards (#299) and `cl_plugins_menu` (#311)
-aren't built yet.
+§6.5, §12, op 5 of §13.1; `ts_server::plugin_offers`, `shared::protocol::tspkg`, issue #298); the
+port client's version check (§13.1, issue #300); the port side of restart and reconnect (§13.5,
+issue #301; the launcher side is tsmod-launcher #4 and #5); and the client's offer flow (§6.3,
+§6.4, §7.2, §7.3, §9, op 5's card; `crates/client/src/plugins/offers/`, issue #299; §17 lists what
+that build decided). `cl_plugins_menu` (#311) and enforcement (§13.3, #302) aren't built yet.
 
 The server loads `tsmod_*` libraries from `dlls/` ([plugin-api.md](plugin-api.md) §1.2); this
 document gives the client the same, with the player's approval. It adds two things:
@@ -357,7 +357,9 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
     are kept with a warning: a client shows at most 4 per connection (§7.3).
 * **When offers are sent:** on every `ClientPutInServer` (so again after each map change; the
   client answers `have` or remembers a refusal for the connection), only to clients that hook
-  `TSPkg` (§12). Offers also go out on demand, with `sv_plugin_offer <#userid|name|all> <id>`;
+  `TSPkg` (§12). They (and op 5) go out at the player's first `PlayerPostThink` after it: FWGS's
+  server drops user messages to a client that isn't spawned yet, which it isn't at
+  `ClientPutInServer` (#317). Offers also go out on demand, with `sv_plugin_offer <#userid|name|all> <id>`;
   `sv_plugin_withdraw <#userid|name|all> <id>` sends op 2 for one sent earlier, and
   `sv_plugin_offers` lists the offers and their checks. The plugin API's
   `offer_client_plugin(edict, id)` waits for the next plugin-api version (#304; tsmod-amxx-rs can
@@ -451,6 +453,40 @@ quotes or `;`, since they go back in `tspkg` replies. `shared::protocol::tspkg` 
   comes from the offer's hash and the signature, not the transport. Unsigned packages over plain
   HTTP are always refused. The cost is a TLS stack in `client.dll` (open question 2).
 * **Cancel:** disconnecting or pressing Cancel stops the download and deletes the staging file.
+* **Built (#299):** `ts_client::plugins::offers` (`flow.rs` decides, `fetch.rs` runs the worker
+  threads, `card.rs` lays the cards out, `mod.rs` routes messages, frames, drawing and input).
+  * Every offer is fetched first (manifest, `.manifest.sig`, then `.publisher.cert`; a missing
+    signature or certificate is a 404, not an error), on a thread of its own; the game polls
+    the results once a frame (`HUD_Frame`), so nothing waits on the network or the disk in a
+    frame. The download, the package checks, the unpacking and the verification of the install
+    run on a worker too.
+  * Before the card, in this order: the manifest parses and names the offer's id and version;
+    the signature checks (§3.3; a broken one is `failed`); unsigned is `failed` over plain HTTP,
+    and unless `cl_plugins_allow_unsigned 1`; a block for this key (here or everywhere) is
+    `blocked`; no library for this platform or an unmet `[requires] port` is `unsupported`; another
+    `client_ext_api` is `failed api`. `cl_plugins 0` and `cl_plugins_download 0` ignore offers.
+  * `have` is the same id, version, platform and `manifest_sha256` approved and applying on this
+    server (the store keeps no package hash; the manifest pins every file). The same files
+    approved only for other servers get the card, and allowing them needs no download.
+  * `offered` is sent when the card is queued; a card's click sends `downloading`; then `loaded`,
+    `installed` (approved for other servers only), `restart` (an older version is loaded, §9) or
+    `failed <reason>`. "Not now" and "Never" send `denied`, and the id isn't shown again this
+    connection. A connection is the server's address: a map change keeps it, a new address or a
+    disconnect cancels its downloads and closes its cards.
+  * The download goes to `cl_plugins/staging/<id>-<version>.tspkg.part`, refused as soon as it's
+    bigger than the offer (or a `Content-Length` disagrees), hashed, opened with `plugin-pkg`
+    (its manifest must be the card's byte for byte, and its signature the same key), unpacked
+    beside `cl_plugins/<id>/<version>/` and renamed into place (an existing directory of that
+    version is set aside as `.<version>.replaced` first), then verified again as installed. The
+    approval written is that verification's: into the store, saved at once, and the gate's
+    in-memory copy, so `ext::load_one` maps it at once. "Allow on this server only" for files
+    already approved on other servers keeps those servers. Any failure leaves only the log line.
+  * Transport: `ureq` 3 with `rustls`, ring and the webpki roots (about 1.5 MB per
+    `client.dll`, open question 2); HTTPS only, redirects included, unless the offer is FastDL's;
+    at most 3 redirects; a non-2xx status is an error.
+  * While a download runs, a line at the top of the screen shows it (no cursor; the game goes
+    on). Cancel is `cl_plugins_cancel` (port addition; it only stops downloads), disconnecting,
+    or the server's withdrawal (op 2, which also closes a card not answered yet).
 
 ### 6.4 Updates
 
@@ -462,6 +498,12 @@ An offer for a newer version of an approved plugin shows the update card (§7.2)
 
 It's approved like any offer, so every change prompts. An offer for an older version than the
 approved one is shown as a downgrade, with a warning, and "Allow" isn't the default.
+
+Built (#299): the update card is the offer card titled "Update: <name> <old> -> <new>", with a
+warning line for a downgrade, for the same version rebuilt (another manifest), and for another
+publisher key, the files and `declares` that changed (from the installed copy's manifest), and
+"A plugin that's loaded now updates at the next start". Its first button is "Install update". No
+card's default is ever an approval.
 
 ### 6.5 Client replies: `tspkg`
 
@@ -526,8 +568,12 @@ lookup, as the port already does for mouse and joystick calls). Both HL25 and FW
 
 ### 7.2 Server offer and update cards
 
-These are drawn in game as a port VGUI panel (`crates/client/src/menus/`, next to the MOTD and
-team menus).
+These are drawn in game. Built (#299, `ts_client::plugins::offers::card`): a panel centred on the
+screen, painted in `HUD_Redraw` after the HUD, the menus and the extensions (which get no `redraw`
+while a card is up) with the engine's blended fills (`pfnFillRGBABlend`) and the console font,
+with the virtual cursor (the view holds still, as with the team menu). Not the SDL card windows of
+§13.5: those stop the engine's frames while open, and a player reading an offer on a server would
+time out (#319). One card at a time; the rest queue.
 
 * **Contents:**
   * the server's name and address;
@@ -560,6 +606,14 @@ team menus).
 * **No cover:** while a card is open, the server can't draw over it. It's drawn last, above HUD
   and VGUI, and the webview overlay and other extensions get no `redraw` over it.
 * **Clear source:** a card always says which server is asking.
+* **Built (#299):** the delay is `plugins::click::ARM_DELAY`, which the start-up box (§7.1) and the
+  relaunch cards (§13.5) share. A card's buttons take a left press and release on the same
+  button, which reach the card only through the client's `IN_MouseEvent` (before the camera's and
+  the menus' handling), never through a key, a bind or a console command; an approving button
+  shows its countdown while disabled. Escape and Enter choose "Not now" and are swallowed;
+  Shift (held) turns "Never from this server" into "Never (everywhere)". An open card is drawn
+  over everything and suppresses the extensions' `redraw`. The e2e hook (§11) exists only in
+  `--features e2e` builds. Real clicks, HL25 and Windows are #318.
 
 ## 8. Cvars and commands (client)
 
@@ -578,8 +632,8 @@ team menus).
   the second word is the literal `password` (§13.5). The launcher's relaunch uses it. Any other
   second word is refused with the usage line, so a password typed as an argument is never used.
 * `ts_dev_restart [restart | port <requirement> [<url>] | plugin <id@version>]` (dev aid):
-  requests a restart and reconnect to the current server for that reason (§13.5), until op 5 and
-  plugin updates do.
+  requests a restart and reconnect to the current server for that reason (§13.5), as op 5's
+  card and an update of a loaded plugin do (#299; #302's enforcement will too).
 
 None of these can approve. A server that stuffs `cl_plugins 0` or `cl_plugins_menu` can, at
 worst, disable plugins for the next start or open the panel. Both are harmless and visible. A
@@ -591,8 +645,9 @@ goes through the launcher's question).
   and `cl_plugins_verify`. The engines execute `config.cfg` only after `Initialize`, so start-up
   reads `cl_plugins` and `cl_plugins_verify_log` from the `config.cfg` line the engine archived
   (the last one wins; a value is on when it's a number other than 0, as `atof` sees it); a change
-  takes effect at the next start. `cl_plugins_download` and `cl_plugins_allow_unsigned` are for the
-  offers (#299). `cl_plugins_menu` is #311 and `tsrs_reconnect` #301.
+  takes effect at the next start. `cl_plugins_download` and `cl_plugins_allow_unsigned` are read
+  when an offer comes (#299), with `cl_plugins_cancel` (port addition), which stops every
+  download and approves nothing. `cl_plugins_menu` is #311 and `tsrs_reconnect` #301.
 
 ## 9. Loading
 
@@ -607,7 +662,9 @@ goes through the launcher's question).
   closes its server surface on it. Built (#297): the files are hashed again just before it's
   mapped, and the address is the net API's (`loopback` for a listen server).
 * **Update while loaded:** the new version is installed and approved, but loads at the next
-  start. The card says "restart to finish".
+  start. The card says "restart to finish". Built (#299): the client answers `restart` and shows
+  "Restart now / Later"; "Restart now" calls `relaunch::restart` for the plugin (§13.5). The
+  loaded version's directory stays until the next start, which removes it before verifying.
 * **Revoked while loaded:** stays loaded until exit.
 
 ## 10. Hashing and file rules (shared)
@@ -674,6 +731,13 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
   3. Offer a package whose size or hash doesn't match the offer, a manifest whose signature
      fails, and an unsigned package. Each must answer `failed` or never reach the card, and leave
      nothing in `cl_plugins/`.
+
+     **Built (#299) in `cargo xtask tspkg`** (each Linux root's dedicated server, the FWGS port
+     client; validation.md §2.z2, scenarios 4–6), not a separate `e2e` command: xtask serves
+     `ts/` as FastDL and can serve other bytes than the server checked; `TSRS_E2E_CARDS` answers
+     the cards. Also covered: "Allow on this server only", an update of the loaded plugin
+     (`restart`, the restart card through the fake launcher), `have`, `tspkg list`, the start's
+     removal of the superseded version, and op 5's card through the fake launcher.
   4. An original TS 3.0 client on the same server must not receive `TSPkg` and must play
      normally.
   5. **Version matching:**
@@ -747,10 +811,12 @@ reason). How a mismatch is handled depends on how old the client is:
   `TSPKG_SINCE` in `shared::protocol::port`, 3.0.9; §12): the server lets them in (logging
   `[ts] version: let in <name> ... then kick: <reason>`) and, when they're put in the server,
   sends op 5 `port_version` (§13.3) with the refusal tag's requirement and
-  `sv_client_version_url` (or `tsmod.org`). The client then shows the update card, with the
-  launcher's help where it can (§13.5); until that card exists (#299, #301) it prints the line
-  `[ts] version: this server needs The Specialists port <requirement>; get it via the TS launcher
-  or <url>`. The server kicks with the refusal text if the client hasn't left within
+  `sv_client_version_url` (or `tsmod.org`). The client prints the line `[ts] version: this server
+  needs The Specialists port <requirement>; get it via the TS launcher or <url>` and shows the
+  update card (#299, once per connection): the requirement, this client's version and the URL,
+  with "Restart to update" (click-only, armed late: it sends `tspkg tsrs <version> restart` and
+  calls `relaunch::restart` for the port, which always goes through the launcher, and the launcher
+  asks before it installs anything, §13.5) and "Not now" (`tspkg tsrs <version> denied`). The server kicks with the refusal text if the client hasn't left within
   `sv_plugin_check_time` (default 15 s; `ts_server::rules::client_version::decide`,
   `plugin_offers`). A map change reconnects the client, which starts this again.
   This path exists because `client.dll` never sees a `ClientConnect` refusal: the engine shows
@@ -911,8 +977,9 @@ first. Without a launcher, the card says where to get the version and offers to 
 `port` restart skips case 3: relaunching the same build would only be refused again.
 
 The port side is `ts_client::relaunch` (issue #301): `relaunch::restart(reason)` is the entry
-point for op 5 and plugin restarts (#298, #299, #302), and the dev aid `ts_dev_restart` (§8)
-calls it until they exist. It reads the server's address from the engine's net API (`Status`,
+point for op 5 and plugin restarts: op 5's card and an update of a loaded plugin call it (#299),
+as the dev aid `ts_dev_restart` (§8) does, and #302's enforcement will. It reads the server's
+address from the engine's net API (`Status`,
 `AdrToString`; a listen server's `loopback` can't be restarted into) and its name from the HUD's
 `ServerName`.
 
@@ -1186,8 +1253,8 @@ open question 3.
    `cl_plugins_*` commands, `xtask plugin-approve`. Depends on the client extension API.
 3. Server: `TSPkg` (sent only to `_tsrs` clients), `plugin_offers.toml`, `sv_plugin_offer`, `tspkg` replies
    and the plugin API additions. Built (#298), but for the plugin API additions (#304).
-4. Client: the offer flow, downloads, the VGUI cards and their safeguards (§7.3), late loading,
-   e2e.
+4. Client: the offer flow, downloads, the in-game cards and their safeguards (§7.3), late
+   loading, e2e. Built (#299).
 5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`. Also:
    * the `TSMOD_LAUNCHER*` environment variables and `ts/launcher.toml`;
    * the IPC endpoint and the `relaunch` subcommand;
@@ -1220,3 +1287,26 @@ chose, and the sections above now say so. In short (issue #313):
 * **The prompt hook** is an environment variable in debug builds, not an SDL stub (§7.1, §11).
 * **`verified_spawn`'s "listed"** is any approved file of the plugin (§5.2).
 * **e2e 1** runs in `cargo xtask client-plugins` on a listen server (§11).
+
+## 17. Decisions made building milestone 4 (#299)
+
+Where this specification was silent or contradicted itself, the offer flow
+(`crates/client/src/plugins/offers/`) chose, and the sections above now say so (issue #319):
+
+* **The cards are drawn in game** in `HUD_Redraw`, last, not as VGUI1 (the port has none) or the
+  SDL windows of §13.5 (they stop the frames, so a server would time the player out) (§7.2).
+* **`have`** compares the manifest's hash, which the store keeps, not the package's (§6.3).
+* **Progress** is a line at the top of the screen, without a cursor; Cancel is
+  `cl_plugins_cancel`, a disconnect or a withdrawal (§6.3).
+* **An update of a loaded plugin** answers `restart` and offers "Restart now" through
+  `relaunch::restart` (§9).
+* **Op 5's card** restarts through the launcher and answers `tspkg tsrs <version> restart` or
+  `denied` (§13.1).
+* **`offered`** goes when the card is queued; `cl_plugins 0` ignores offers like
+  `cl_plugins_download 0` (§6.3).
+* **"Allow on this server only"** of the same files keeps the servers allowed before (§6.3).
+* **Superseded versions** go at approval unless loaded, else at the next start (§4, §9).
+* **e2e 2–3** run in `cargo xtask tspkg` with a FastDL stand-in and the `--features e2e` card hook
+  (§11).
+* **Offers reach FWGS clients** only once spawned, so the server sends them at the first
+  `PlayerPostThink` (§6.1, #317).

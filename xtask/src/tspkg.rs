@@ -19,12 +19,18 @@
 //!   3. Without `ts_dev_tspkg`, the same offers reach no client (this build is below
 //!      `TSPKG_SINCE`, as an older port client would be); and on the Steam engines the original
 //!      TS 3.0 client (`TS_ORIG_CLIENT`, as `xtask version`) gets no `TSPkg` and joins.
+//!   4. to 6. The client's side (issue #299): offers, downloads over a FastDL stand-in, the
+//!      cards, tampered packages, an update and op 5's card through the fake launcher
+//!      ([`crate::tspkg_client`]). The client is the e2e build (`--features e2e`) for the whole
+//!      run; the normal one is put back afterwards.
 
 use crate::roots::{Engine, Os, Root};
+use crate::tspkg_client::FastDl;
 use crate::{Ctx, say};
 use plugin_pkg::{Package, PublicKey, Sha256, SigningKey, builtin_roots};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The stub package's id and version.
 const STUB: &str = "xtask_stub";
@@ -140,20 +146,41 @@ impl Ctx {
         let orig = std::env::var_os("TS_ORIG_CLIENT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join("games/xash_win_orig"));
-        self.install(&fwgs);
+        // The client's side (tspkg_client.rs): the e2e client (cards answered from a file, the
+        // fake launcher beside it), the stub extension the packages carry, and FastDL.
+        self.install_e2e(&fwgs);
+        let t = fwgs.target();
+        let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
+        c.current_dir(&self.repo).args(["build", "-p", "tsmod-client-test", "--target", t.triple]);
+        if self.profile != crate::Profile::Dev {
+            c.arg("--release");
+        }
+        if !c.status().expect("cargo").success() {
+            std::process::exit(1);
+        }
+        let dl = match FastDl::start() {
+            Ok(dl) => dl,
+            Err(e) => {
+                say!("== tspkg: FAIL: {e}");
+                return false;
+            }
+        };
         let mut ok = true;
         for (i, r) in roots.iter().filter(|r| r.os == Os::Linux && r.exists()).enumerate() {
             if r.name != fwgs.name {
                 self.install(r);
             }
-            ok &= self.tspkg_root(r, &fwgs, &orig, 27915 + 10 * i as u16);
+            ok &= self.tspkg_root(r, &fwgs, &orig, 27915 + 10 * i as u16, &dl);
         }
+        // Put the normal client back.
+        self.install(&fwgs);
         say!("== tspkg: {}", crate::pass(ok));
         ok
     }
 
-    fn tspkg_root(&self, root: &Root, fwgs: &Root, orig: &Path, port: u16) -> bool {
+    fn tspkg_root(&self, root: &Root, fwgs: &Root, orig: &Path, port: u16, dl: &FastDl) -> bool {
         let gamedir = root.path.join("ts");
+        dl.0.lock().unwrap().root = gamedir.clone();
         let mut checks: Vec<(String, bool)> = Vec::new();
         let offers = match write_stub(&self.repo, &gamedir) {
             Ok(o) => o,
@@ -235,6 +262,7 @@ impl Ctx {
             }
         }
         remove_stub(&gamedir);
+        checks.extend(self.tspkg_client(root, fwgs, port + 4, dl, &dev));
 
         for (what, ok) in &checks {
             say!("   {} {what}", crate::pass(*ok));

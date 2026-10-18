@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 const PASSWORD: &str = "e2e-secret-4711";
 const CLIENT_CFG: &str = "xtask_relaunch.cfg";
-const LAUNCHER_DIR: &str = "xtask_launcher";
+pub(crate) const LAUNCHER_DIR: &str = "xtask_launcher";
 
 fn server_cfg(password: bool) -> String {
     let pw = if password { format!("sv_password \"{PASSWORD}\"\n") } else { "sv_password \"\"\n".into() };
@@ -103,7 +103,7 @@ impl Ctx {
 
     /// Installs `root` with the e2e client (the `e2e` feature) and copies `ts-launcher-fake` to
     /// `<root>/xtask_launcher/`.
-    fn install_e2e(&self, root: &Root) {
+    pub(crate) fn install_e2e(&self, root: &Root) {
         self.install(root);
         let t = root.target();
         let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
@@ -406,7 +406,7 @@ fn waits(n: usize) -> String {
     format!("{}\n", "wait;".repeat(20)).repeat(n)
 }
 
-fn fake_name(t: &Target) -> &'static str {
+pub(crate) fn fake_name(t: &Target) -> &'static str {
     if t.os == Os::Windows { "ts-launcher-fake.exe" } else { "ts-launcher-fake" }
 }
 

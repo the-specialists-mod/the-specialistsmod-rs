@@ -94,6 +94,7 @@ mod roots;
 mod steam;
 mod ts21;
 mod tspkg;
+mod tspkg_client;
 mod version;
 
 use roots::{Engine, Os, Root, Target};

@@ -824,6 +824,8 @@ pub fn player_pre_think(e: *mut edict_t) {
 /// `PlayerPostThink`.
 pub fn player_post_think(e: *mut edict_t) {
     outer(id::PLAYER_POSTTHINK, e, &mut (), |_| crate::player::with_player(e, |p, cx| p.post_think(cx)));
+    // Port addition: op 5 and the client plugin offers, once the client is spawned (issue #317).
+    crate::plugin_offers::client_ready(e);
 }
 
 /// `Jump` from the player's `PreThink`.
