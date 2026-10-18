@@ -248,6 +248,8 @@ pub fn plugin_checks(text: &str, t: &Target, up: bool) -> Vec<(String, bool)> {
             "no plugin check failed".into(),
             !text.contains("check") || !text.lines().any(|l| l.contains("[tsmod_test]") && l.contains("FAIL")),
         ),
+        // Issue #331: the clash check before registering the server's and plugins' cvars is quiet on FWGS.
+        ("no engine warning for a new cvar".into(), !text.contains("server tried to get non-existent cvar")),
         ("no panic or crash".into(), !(text.contains("PANIC") || text.contains("FATAL ERROR") || text.contains("Segmentation"))),
     ];
     for what in CHECKS {
@@ -303,6 +305,9 @@ mod tests {
         assert!(checks.iter().all(|(_, ok)| *ok), "{checks:?}");
         let bad = plugin_checks(&format!("{log}[tsmod_test] error: check moved FAIL\n"), &t, true);
         assert!(bad.iter().any(|(w, ok)| w == "no plugin check failed" && !ok));
+        let warned =
+            plugin_checks(&format!("{log}Warning: SV_CvarGetPointer: server tried to get non-existent cvar \"ts_bot_quota\"\n"), &t, true);
+        assert!(warned.iter().any(|(w, ok)| w == "no engine warning for a new cvar" && !ok));
         let looped = plugin_checks(&format!("{log}[ts] bots: backend test: reloading ts_dojo\n"), &t, true);
         assert!(looped.iter().any(|(w, ok)| w.contains("one reload") && !ok), "a second reload fails");
     }

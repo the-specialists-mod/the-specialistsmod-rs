@@ -6,6 +6,7 @@ use crate::server::Engine;
 use crate::sys::*;
 use crate::util::{cstr, to_cstring};
 use std::ffi::CStr;
+use std::sync::OnceLock;
 
 /// `SVC_INTERMISSION` (engine message number; not in the bindings' allowlist).
 pub const SVC_INTERMISSION: i32 = 30;
@@ -109,7 +110,7 @@ impl Engine {
     /// `Cvar_DirectSet` on the named cvar, if it exists (bypasses the `FCVAR_SPONLY`-style
     /// checks `pfnCvar_SetString` applies).
     pub fn cvar_direct_set_by_name(&self, name: &CStr, value: &str) {
-        let c = self.cvar_ptr(name);
+        let c = self.cvar_lookup(name);
         if !c.is_null() {
             let v = to_cstring(value);
             eng!(pfnCvar_DirectSet(c, v.as_ptr()))
@@ -118,5 +119,25 @@ impl Engine {
 
     pub fn cvar_ptr(&self, name: &CStr) -> *mut cvar_t {
         eng!(pfnCVarGetPointer(name.as_ptr()))
+    }
+
+    /// [`Engine::cvar_ptr`] without FWGS's complaint when there's no such cvar: FWGS's
+    /// `SV_CvarGetPointer` warns "server tried to get non-existent cvar" for every miss, which is
+    /// the normal case when checking a new name before registering it (issue #331). The server's
+    /// table has no walk of the cvar list (the client's `pfnGetFirstCvarPtr`), so on FWGS this asks
+    /// `pfnCVarGetString` first, which is quiet: FWGS's `Cvar_VariableString` returns one static
+    /// `""` for a missing cvar, and a cvar's own `string` is always a pool copy, never that
+    /// literal. The literal's address comes from a name no cvar has. A name that answers with
+    /// another pointer exists, and `pfnCVarGetPointer` finds it without a warning. The Steam
+    /// engines (HLDS, ReHLDS) look up quietly and go straight to `pfnCVarGetPointer`.
+    pub fn cvar_lookup(&self, name: &CStr) -> *mut cvar_t {
+        if self.is_xash() {
+            static MISSING: OnceLock<usize> = OnceLock::new();
+            let missing = *MISSING.get_or_init(|| eng!(pfnCVarGetString(c"ts port: no such cvar".as_ptr())) as usize);
+            if eng!(pfnCVarGetString(name.as_ptr())) as usize == missing {
+                return std::ptr::null_mut();
+            }
+        }
+        self.cvar_ptr(name)
     }
 }

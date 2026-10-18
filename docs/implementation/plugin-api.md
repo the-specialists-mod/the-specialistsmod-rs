@@ -294,7 +294,7 @@ Addresses are `ts_i386.so` (Ghidra numbering). "pl+" offsets are `CBasePlayer` f
 | `data_dir(plugin, buf, len)` | `<gamedir>/tsmod/<name>/` (trailing separator), created on first use, for loaded and attached plugins. `INVALID` for `NO_PLUGIN` or a dead id. Strings out: NUL-terminated, cut to fit, the full length returned. |
 | `map_name(buf, len)` | `gpGlobals->mapname`. |
 | `register_command(plugin, name, f)` | A server command; `f(argc, argv)`. One trampoline is registered with the engine per name and finds the callback by `argv[0]`. `EXISTS` if a plugin has it; the engine warns about its own names. |
-| `register_cvar(plugin, name, value, flags)` | `pfnCVarRegister` of a leaked `cvar_t`, or the existing one; returns the `cvar_t *`. |
+| `register_cvar(plugin, name, value, flags)` | `pfnCVarRegister` of a leaked `cvar_t`, or the existing one; returns the `cvar_t *`. The existing one is found with `Engine::cvar_lookup`, quiet on FWGS, whose `pfnCVarGetPointer` warns for every new name (#331). |
 | `register_bot_backend(plugin, name, backend)` | Only plugins with an id (loaded; attached since version 7); a plugin name, not `native`; `EXISTS` if taken. One registered after the map start chose the map's backend takes over at once when `ts_bot_backend` names it and native runs. [bot-plugins.md](bot-plugins.md) §2.1. |
 | `player_info` | As in §3, plus `alive` (alive and not observing), `is_bot` (`m_bIsBot`, any backend), `team` (the rules team from 1 in teamplay, 0 none) and `has_flag` (carries the CTB case). |
 | `player_inventory(player, out, max)` | Every owned weapon id 1..37: clip, the reserve of its ammo type, fire mode, owned attachments. Returns the count. Snapshot like `player_info` when the player is out of reach. |

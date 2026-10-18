@@ -103,7 +103,7 @@ pub fn register_extra(list: &[(&str, &str, i32)]) {
     let e = engine();
     for &(name, value, flags) in list {
         let cname = goldsrc::util::to_cstring(name);
-        if !e.cvar_ptr(&cname).is_null() {
+        if !e.cvar_lookup(&cname).is_null() {
             continue;
         }
         e.register_cvar(name, value, flags);

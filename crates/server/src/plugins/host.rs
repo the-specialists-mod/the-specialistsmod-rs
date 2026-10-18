@@ -112,7 +112,7 @@ pub fn register_cvar(name: &str, value: &str, flags: i32) -> *mut goldsrc::sys::
     }
     let eng = engine();
     let c = CString::new(name).unwrap_or_default();
-    let existing = eng.cvar_ptr(&c);
+    let existing = eng.cvar_lookup(&c);
     if !existing.is_null() {
         return existing;
     }
