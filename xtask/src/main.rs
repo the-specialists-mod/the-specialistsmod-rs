@@ -38,6 +38,12 @@
 //!                                                 TDM, objective rounds, a large map; then the
 //!                                                 port's and the original TS client on the Linux
 //!                                                 Steam roots (see ts21.rs; not in `all`)
+//! cargo xtask version [--release] [<root>...]
+//!                                                 the port client's version check at connect
+//!                                                 (sv_client_version, sv_client_require_port) on
+//!                                                 each Linux root's dedicated server with the FWGS
+//!                                                 port client and the original TS client (see
+//!                                                 version.rs; not in `all`)
 //! cargo xtask all     [--release]                 test, then play, then steam (only when Steam is
 //!                                                 running and logged in; skipped with a note otherwise)
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
@@ -66,6 +72,7 @@ mod plugins;
 mod roots;
 mod steam;
 mod ts21;
+mod version;
 
 use roots::{Engine, Os, Root, Target};
 use std::path::{Path, PathBuf};
@@ -142,6 +149,11 @@ fn main() {
                 exit(1);
             }
         }
+        "version" => {
+            if !ctx.version_all(&select_roots(&args)) {
+                exit(1);
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -196,7 +208,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|ts21|all|client|steam|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|ts21|version|all|client|steam|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }

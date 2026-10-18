@@ -12,7 +12,7 @@ const SERVER: i32 = 0x4; // FCVAR_SERVER
 const UNLOGGED: i32 = 0x100; // FCVAR_UNLOGGED
 
 /// (name, default, flags), in TS registration order. All of these are registered by TS's
-/// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and `ts_bot_quota`/`ts_bot_stop` (this port).
+/// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and the port's (`ts_bot_*`, `sv_client_*`).
 /// The port's `ts_pm_arith` is registered after them ([`pm_arith`]).
 pub const CVARS: &[(&str, &str, i32)] = &[
     ("displaysoundlist", "0", 0),
@@ -62,6 +62,11 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     // Port addition: the bot backend, read at map start (`bot_backend::map_start`): `native` (TS's
     // bots) or a name a `tsmod_*` plugin registered. A change mid-map reloads the map (`reload`).
     ("ts_bot_backend", "native", 0),
+    // Port additions: the port client's version check at connect (`client_version`, issue #300).
+    // `FCVAR_SERVER`, so the launcher's server browser reads them from the A2S rules.
+    ("sv_client_version", "any", SERVER),
+    ("sv_client_require_port", "0", SERVER),
+    ("sv_client_version_url", "", 0),
 ];
 
 /// TS defines these `cvar_t`s but never registers them, so they're constants (architecture.md

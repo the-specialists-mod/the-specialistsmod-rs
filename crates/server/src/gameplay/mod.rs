@@ -558,19 +558,26 @@ pub fn set_physinfo(e: *mut edict_t) {
     engine().set_physics_key(e, PHYSINFO_KEY_C, &id);
 }
 
-/// `ClientConnect`: the active ruleset's verdict on the connecting client
-/// ([`ServerRules::refuse_client`]), from its edict and userinfo. `Some(reason)` refuses it.
-pub fn refuse_client(e: *mut edict_t) -> Option<&'static str> {
+/// Calls `f` with the connecting client as `ClientConnect` can tell it
+/// ([`ConnectingClient::classify`]), from its edict and userinfo.
+pub fn with_connecting_client<R>(e: *mut edict_t, f: impl FnOnce(ConnectingClient) -> R) -> R {
     use goldsrc::edict::EdictPtr;
     let eng = engine();
     let fake = !e.is_null() && e.v().flags & goldsrc::sys::FL_FAKECLIENT as i32 != 0;
     let key = |k: &std::ffi::CStr| if e.is_null() { String::new() } else { eng.info_key(e, k).to_string_lossy().into_owned() };
     let (bot, version) = (key(c"*bot"), key(shared::protocol::port::USERINFO_KEY_C));
     let hltv = [key(c"*hltv"), key(c"hltv")].into_iter().find(|v| !v.is_empty() && v != "0").unwrap_or_default();
-    let client = ConnectingClient::classify(fake, &bot, &hltv, &version);
-    let reason = active().server.refuse_client(client)?;
-    eng.print(&format!("[ts] gameplay: refused a client in ruleset {} ({client:?}): {reason}\n", active_id()));
-    Some(reason)
+    f(ConnectingClient::classify(fake, &bot, &hltv, &version))
+}
+
+/// `ClientConnect`: the active ruleset's verdict on the connecting client
+/// ([`ServerRules::refuse_client`]). `Some(reason)` refuses it.
+pub fn refuse_client(e: *mut edict_t) -> Option<&'static str> {
+    with_connecting_client(e, |client| {
+        let reason = active().server.refuse_client(client)?;
+        engine().print(&format!("[ts] gameplay: refused a client in ruleset {} ({client:?}): {reason}\n", active_id()));
+        Some(reason)
+    })
 }
 
 /// The `SrvSett` 4 value for the active plugin.

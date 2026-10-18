@@ -207,9 +207,11 @@ play another ruleset (issue #100 §1.1). The port's client registers the `FCVAR_
 `_tsrs`, whose value is its version (`shared::protocol::port::USERINFO_KEY`), so its userinfo
 carries the key and TS 3.0's doesn't. GoldSrc (the Steam client) puts a `FCVAR_USERINFO` cvar in
 the userinfo only once the cvar is set, not when it is registered (FWGS does it then too), so the
-client's `HUD_Init` sets it: `Cvar_SetValue` to `1` at once (the client API sets cvars only from a
-float), then the version string by a queued `_tsrs <version>` command, which runs after the
-command line's `+connect`/`+exec`. A client that connects before that is `Port("1")`. The engines strip `_` keys only from the userinfo they send
+client's `HUD_Init` sets it: `Cvar_SetValue` at once to the version as one number (the documented
+client API sets cvars only from a float; `3000002` for 3.0.2, `port::numeric_version`), then the
+version string by a queued `_tsrs <version>` command, which runs after the command line's
+`+connect`/`+exec`. A client that connects before that is `Port("3000002")`, which the version
+check reads as 3.0.2 (`client-plugins.md` §13.1; clients from before #303 sent `1`). The engines strip `_` keys only from the userinfo they send
 to other clients (FWGS `SV_FullClientUpdate`, ReHLDS `Info_RemovePrefixedKeys`), not from the
 server's copy.
 
@@ -230,6 +232,10 @@ tsmod.org`. A refused client gets the text through the engine's reject buffer (`
 128 bytes, written by `server-dll`'s `client_connect`; FWGS and ReHLDS print it to the client and
 drop it, HLDS `echo`es it), before TS's part of `ClientConnect` counts it. The server logs
 `[ts] gameplay: refused a client in ruleset 21 (Other): ...`.
+
+After the ruleset, `rules::client_connect` runs the port's version check (`sv_client_version`,
+`sv_client_require_port`; `rules::client_version`, `client-plugins.md` §13.1), the same in every
+ruleset. Its defaults refuse no one.
 
 ### 4.3 Versions in the buy menu
 

@@ -1216,11 +1216,14 @@ impl Ctx {
         self.install(root);
         say!("== steam {}: Steam HL25 client on a dedicated server, ts_dojo then ts_awaken (port {port})", root.name);
         // The per-map config: these come back after the changelevel. Logging (to the console
-        // only) puts the chat lines in the server log.
+        // only) puts the chat lines in the server log. The strictest version settings (#300):
+        // the Steam client's `_tsrs` must read as the server's own version at every connect.
         let server_cfg = root.path.join("ts/xtask_steam_server.cfg");
         fs::write(
             &server_cfg,
-            format!("// Written by cargo xtask steam.\n{EXEC_SERVER_CFG}sv_cheats 1\nts_bot_quota 0\nts_bot_stop 1\ndeveloper 1\nmp_logfile 0\nlog on\n"),
+            format!(
+                "// Written by cargo xtask steam.\n{EXEC_SERVER_CFG}sv_cheats 1\nts_bot_quota 0\nts_bot_stop 1\ndeveloper 1\nmp_logfile 0\nlog on\nsv_client_version exact\nsv_client_require_port 1\n"
+            ),
         )
         .unwrap();
         let out_path = self.repo.join("target").join(format!("server-{}.log", root.name));
@@ -1303,6 +1306,7 @@ impl Ctx {
         let mut checks = vec![
             ("join: bought an AK47 and clicked to spawn", spawns.first().is_some_and(|l| spawned_with_ak47(l))),
             ("ts_bot_quota 1 added a bot", stext.contains("[ts] bots: added")),
+            ("sv_client_version exact let the Steam client in", !stext.contains("[ts] version: refused")),
             (
                 "chat: say and say_team reached the server and came back to the client",
                 stext.contains("say \"xtask_chat_all\"")

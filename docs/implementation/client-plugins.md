@@ -543,33 +543,55 @@ reason). How a mismatch is handled depends on how old the client is:
 * **Older port clients, and TS 3.0's client** (with `sv_client_require_port 1`): refused at
   `ClientConnect` with the text below. They can't receive `TSPkg` (§12).
 
+  Until `TSPkg` ships (#298), `TSPKG_SINCE` doesn't exist and every mismatching port client takes
+  this path (issue #300 implements only it, `ts_server::rules::client_version`).
+
 | cvar (server, port addition) | default | meaning |
 |---|---|---|
-| `sv_client_version` | `any` | `any`; `same_minor` (same `major.minor`, the TS version: 3.0); `exact` (the server's own `VERSION`); or a semver requirement such as `>=3.0.8, <3.1` |
+| `sv_client_version` | `any` | `any` (or empty); `same_minor` (same `major.minor`, the TS version: 3.0); `exact` (the server's own `VERSION`); or a semver requirement such as `>=3.0.8, <3.1` (Cargo's rules: a bare `3.0.8` means `^3.0.8`). Keywords are case-insensitive. A value that is none of these is logged at each connect (`[ts] version: sv_client_version "..." isn't ...`) and admits every version, as `any` does |
 | `sv_client_require_port` | 0 | 1 also refuses clients without `_tsrs`: TS 3.0's original client, and port clients older than `_tsrs` |
-| `sv_client_version_url` | `""` | shown in the refusal; the default text names the launcher and the releases page |
+| `sv_client_version_url` | `""` | shown in the refusal; empty shows `tsmod.org` (the site the 2.1 mode's refusal names) |
 
 `sv_client_version` and `sv_client_require_port` are `FCVAR_SERVER`, so they appear in the
 server's A2S rules. tsmod-launcher's server browser reads them and checks before the player
-joins (§13.5).
+joins (§13.5). The server reads all three at each connect, so a change applies to the next one.
 
-* **The refusal reason** is formatted, for example "This server needs The Specialists port
-  3.0.8 (you have 3.0.7). Update with the TS launcher, or from <url>. [tsrs:=3.0.8]". It's cut to
-  the engine's reject buffer, about 128 bytes, and the tag at the end is always kept. The tag
-  carries the requirement in machine-readable form, for tools that read the engine log. `rules::client_connect`'s `&'static str` reason becomes an
-  owned string for this.
-* **Bots** are never checked. A `_tsrs` value that isn't a version (`parse_version` fails)
-  counts as a mismatch, unless the policy is `any`.
+* **The version on the first connect.** GoldSrc puts a `FCVAR_USERINFO` cvar in the userinfo only
+  once it is set, and the client can set its string only by a queued command, which runs after the
+  command line's `+connect` (#196). So the client first sets `_tsrs` with `Cvar_SetValue` to the
+  version as one number, `major * 1_000_000 + minor * 1_000 + patch` (`3000008` for 3.0.8;
+  `shared::protocol::port::numeric_version`), which the engines write as `%d`, then to the string.
+  The server reads both forms (`port::parse_userinfo_version`). Clients from before #303 send `1`
+  first, which reads as an unknown version.
+* **The refusal reason** is formatted as "This server needs The Specialists port 3.0.8 (yours:
+  3.0.7). Update via the TS launcher or tsmod.org. [tsrs:=3.0.8]". The needed part is `3.0.8`
+  (`exact`), `3.0.x` (`same_minor`), the requirement, or nothing (`any` with
+  `sv_client_require_port 1`); "yours" is the client's version, `unknown`, or `TS 3.0` (no
+  `_tsrs`, which reads "Get it via ..."). The tag carries the requirement in semver syntax for
+  tools that read the engine log or the reject text: `*`, `~3.0`, `=3.0.8`, or the requirement as
+  semver writes it (`>=3.0.8, <3.1`).
+  * It's cut to 127 bytes: the engines' `szRejectReason` is 128 with the NUL (FWGS `SV_New_f`,
+    ReHLDS `SV_ConnectClient_internal`, which reimplements HLDS's). The body is cut at a character
+    boundary and the tag is kept whole. With the default URL, `any`, `same_minor` and `exact` fit
+    uncut for versions up to 3.10.10; a long URL or requirement loses the end of the body.
+  * `;`, `"` and control characters become spaces: ReHLDS and HLDS also send the reason to the
+    client as `echo <reason>` console text, where they would start another command.
+  * The server logs `[ts] version: refused <name> (<client>): <reason>`.
+* **Bots and HLTV** are never checked. A `_tsrs` value that isn't a version counts as a mismatch,
+  unless the policy is `any`.
 * **Gameplay rulesets:** a ruleset's own client check (`gameplay::refuse_client`, the TS 2.1
-  mode's) runs first and keeps its own reason.
+  mode's) runs first and keeps its own reason. In 2.1 mode TS 3.0's client gets the 2.1 refusal
+  whatever `sv_client_require_port` says, and port clients then face the version check.
 * **The plugin API** gets `client_port_version(edict)`, so AMX Mod X plugins can apply a policy
-  of their own.
+  of their own. A new `PluginApi` entry is a version break, so it waits for the next one (#304).
 * **The client side:**
-  * The client compares the server's version (`SrvSett` keys 5–7) with its own and prints the
-    difference in the console, without refusing.
-  * With `cl_version_strict 1` (default 0), it refuses to stay on a server whose version differs
-    from its own (same rules as `exact`). It disconnects with the same kind of message, for
-    players who want to know they're on matching code.
+  * The client compares the server's version (`SrvSett` keys 5–7, complete at key 7) with its own
+    and prints the difference in the console (`[ts] version: this server runs The Specialists
+    port 3.0.8, this client is 3.0.7`) at each map, without refusing. TS 3.0's server sends no
+    key 5, so nothing is compared there.
+  * With `cl_version_strict 1` (default 0, archived), it refuses to stay on a server whose version
+    differs from its own (same rules as `exact`): it prints the line with `cl_version_strict 1
+    disconnects` and runs `disconnect`. For players who want to know they're on matching code.
 
 ### 13.2 Plugin versions
 
@@ -649,7 +671,7 @@ op 5 port_version   version requirement (≤ 48), string url (≤ 96); id is "ts
 
 | cvar | default | meaning |
 |---|---|---|
-| `cl_version_strict` | 0 | 1 disconnects from servers whose port version differs from the client's |
+| `cl_version_strict` | 0 | 1 disconnects from servers whose port version differs from the client's (`FCVAR_ARCHIVE`; §13.1) |
 
 `cl_plugins_list` shows, for the current server, which loaded plugins are suspended and why.
 

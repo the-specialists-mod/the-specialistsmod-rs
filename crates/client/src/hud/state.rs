@@ -107,6 +107,9 @@ pub enum Effect {
     /// The server runs another gameplay ruleset than the last one the client saw (`SrvSett` 4):
     /// say so on the console.
     GameplayRuleset(i16),
+    /// The server's port version is complete (`SrvSett` 7, after 5 and 6; port addition): compare
+    /// it with this client's (`super::version`).
+    ServerVersion([i16; 3]),
     /// Forward to the effects package (`crate::state::Shared::ts_effects`).
     Fx(crate::state::TsEffect),
     Fade(p::TsFade),
@@ -654,6 +657,7 @@ impl Hud {
                     k if k == port::SRVSETT_VERSION_KEYS[2] => {
                         if let Some(sv) = &mut self.server_version {
                             sv[2] = v.value;
+                            fx.push(Effect::ServerVersion(*sv));
                         }
                     }
                     _ => {}
@@ -1178,11 +1182,15 @@ mod tests {
         let [k5, k6, k7] = port::SRVSETT_VERSION_KEYS;
         h.apply(Msg::InitHUD, &[], &c, &mut fx);
         h.apply(Msg::SrvSett, &set(k6, 4), &c, &mut fx);
+        h.apply(Msg::SrvSett, &set(k7, 4), &c, &mut fx);
         assert_eq!(h.server_version, None, "no key 5 yet");
+        assert!(!fx.iter().any(|f| matches!(f, Effect::ServerVersion(_))), "nothing to compare");
         for (k, v) in [(k5, 3), (k6, 1), (k7, 12)] {
             h.apply(Msg::SrvSett, &set(k, v), &c, &mut fx);
         }
         assert_eq!(h.server_version, Some([3, 1, 12]));
+        // Key 7 completes it: the client compares it with its own (`cl_version_strict`).
+        assert_eq!(fx.iter().filter(|f| matches!(f, Effect::ServerVersion(_))).collect::<Vec<_>>(), [&Effect::ServerVersion([3, 1, 12])]);
         // TS 3.0's own keys are untouched.
         assert_eq!((h.realbullet, h.cashbased, h.ammocount), (0, 0, 0));
         h.apply(Msg::InitHUD, &[], &c, &mut fx);

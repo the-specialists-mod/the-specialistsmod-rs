@@ -83,6 +83,7 @@ cargo xtask play                        # gameplay on a listen server, fwgs and 
 cargo xtask meck                        # grenades on MecklenburgV_Rain_Final only (~30 s fwgs, ~1 min fwgs-win)
 cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath, four addbot bots, botlearn (~45 s)
 cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
+cargo xtask version [<root>...]         # the port client's version check at connect, Linux roots one by one (~1.5 min each, §2.z)
 cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
@@ -267,6 +268,27 @@ Then, on each Linux Steam root among the selected ones (`rehlds-linux`, `hlds25-
 being the Wine roots; the clients about 2), which would more than double `cargo xtask all`, so
 `all` doesn't include it: run it after changes to the 2.1 plugin, the reload, the rules' round
 code or the client check.
+
+### 2.z Client versions (`cargo xtask version`)
+
+`cargo xtask version [roots...]` (issue #300, `xtask/src/version.rs`,
+`implementation/client-plugins.md` §13.1): on each Linux root (`fwgs`, `rehlds-linux`,
+`hlds25-linux`) the dedicated server runs TS 3.0 mode three times, one client each, with the
+port's FWGS client (`fwgs` root; `connect ... gs` for the Steam engines) and the original client
+as in §2.y:
+
+1. `sv_client_version ">=99.0.0"`: the server logs `[ts] version: refused` with `[tsrs:>=99.0.0]`,
+   the client's log shows that tag, and nobody enters the game.
+2. `sv_client_version exact`, `sv_client_require_port 1`: the port's client joins, the server
+   refuses nobody, and the client prints no `[ts] version: this server runs ...` line.
+3. The same settings (Steam engines only, when `~/games/xash_win_orig` exists): the original client
+   is refused, `(Other)` in the server's line and `[tsrs:=<version>]` in its `engine.log`.
+
+Client logs go to `target/version-client-<root>-<case>.log` and
+`target/version-orig-client-<root>.log`. Not in `all`: run it after changes to the connect path,
+`_tsrs` or the `SrvSett` version keys. The Steam client is covered by `xtask steam <root>`
+(§5): its dedicated servers run `sv_client_version exact` and `sv_client_require_port 1`, and a
+check fails if the server logs `[ts] version: refused`.
 
 ## 3. Results
 

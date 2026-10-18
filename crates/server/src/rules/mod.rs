@@ -13,7 +13,9 @@
 //! * `teams`: teamplay assignment and messages.
 //! * `votes`: chat map votes (`vote map/stats/reset`, `CheckVotes`).
 //! * `voice`: `CVoiceGameMgr` (who hears whom, `vban`, `VoiceMask`/`ReqState`).
+//! * `client_version`: the port client's version check at connect (port addition).
 
+pub mod client_version;
 pub mod commands;
 pub mod cvars;
 pub mod frame;
@@ -34,6 +36,7 @@ use crate::world::{Cx, DamageInfo};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use std::borrow::Cow;
 use std::ffi::CStr;
 
 /// Per-player rules state (`CBasePlayer` TS fields; offsets from player-movement.md §8).
@@ -294,18 +297,42 @@ pub fn world_key_value(key: &CStr, value: &CStr) -> bool {
 }
 
 /// `ClientConnect`: `Err(reason)` refuses the client, for the engine's reject buffer. Port
-/// addition: the gameplay ruleset may refuse a client first (`gameplay::refuse_client`), before
-/// TS's part counts it.
-pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> Result<(), &'static str> {
+/// additions: the gameplay ruleset may refuse a client first (`gameplay::refuse_client`), with
+/// its own reason; then the port client's version check (`client_version`, issue #300); both
+/// before TS's part counts it.
+pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> Result<(), Cow<'static, str>> {
     if let Some(reason) = crate::gameplay::refuse_client(e) {
-        return Err(reason);
+        return Err(reason.into());
+    }
+    if let Some(reason) = check_client_version(e, name) {
+        return Err(reason.into());
     }
     if !lifecycle::client_connect(e, name, addr) {
-        return Err("Connection rejected by game");
+        return Err("Connection rejected by game".into());
     }
     crate::plugins::client_connect(e);
     Ok(())
 }
+/// The port client's version check (`client_version::check`) with the server's cvars; logs a
+/// refusal, and a `sv_client_version` it can't read (which then admits every version).
+fn check_client_version(e: *mut edict_t, name: &CStr) -> Option<String> {
+    use client_version as cv;
+    let eng = engine();
+    let policy = cv::Policy::parse(&cvars::s(cv::CVAR_VERSION)).unwrap_or_else(|bad| {
+        eng.print(&format!(
+            "[ts] version: sv_client_version \"{bad}\" isn't any, same_minor, exact or a semver requirement; every version may join\n"
+        ));
+        cv::Policy::Any
+    });
+    let settings = cv::Settings { policy, require_port: cvars::on(cv::CVAR_REQUIRE_PORT), url: cvars::s(cv::CVAR_URL) };
+    let server = shared::protocol::port::version_numbers();
+    crate::gameplay::with_connecting_client(e, |client| {
+        let reason = cv::check(&settings, server, client)?;
+        eng.print(&format!("[ts] version: refused {} ({client:?}): {reason}\n", name.to_string_lossy()));
+        Some(reason)
+    })
+}
+
 /// `ClientDisconnect`: plugins hear of it first, while the client is still a player.
 pub fn client_disconnect(e: *mut edict_t) {
     crate::plugins::client_disconnect(e);

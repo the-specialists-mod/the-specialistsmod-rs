@@ -116,6 +116,10 @@ cargo xtask ts21 [--no-clients] [<root>...]
                                           # the server config's and rcon's ts_gameplay reloads, LMS, The One,
                                           # teamplay, round TDM, objective rounds, a large map; then the port's
                                           # and the original client on the Linux Steam roots (~6 min, not in all)
+cargo xtask version [<root>...]           # the port client's version check at connect (sv_client_version,
+                                          # sv_client_require_port) on each Linux root's dedicated server: the
+                                          # FWGS port client refused and admitted, the original client refused
+                                          # (~1.5 min per root, not in all)
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask steam [listen|<server-root>]  # the Steam HL25 client (Half-Life/ts): play's scenes + changelevel + the
                                           # Steam-only regressions on a listen server (~7 min), or joining

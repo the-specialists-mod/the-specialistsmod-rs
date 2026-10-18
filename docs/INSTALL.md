@@ -138,6 +138,20 @@ does changing `ts_bot_backend` (the bot AI, default `native`). In 2.1 mode only 
 "Invalid Version: Running 2.1 mode. Upgrade to the rust port at tsmod.org". The buy menu shows
 the ruleset and the client's and the server's versions.
 
+Port additions for client versions (`implementation/client-plugins.md` §13.1). By default every
+client joins.
+
+* `sv_client_version` (default `any`): which versions of this port's client may join. `same_minor`
+  (the server's `3.0`), `exact` (the server's own version), or a requirement such as
+  `>=3.0.8, <3.1`. A refused player is told both versions, for example "This server needs The
+  Specialists port 3.0.8 (yours: 3.0.7). Update via the TS launcher or tsmod.org. [tsrs:=3.0.8]".
+* `sv_client_require_port 1` also refuses TS 3.0's own client.
+* `sv_client_version_url` replaces `tsmod.org` in that text.
+
+The first two show in the server browser's rules, so the launcher can warn before joining. This
+is about compatibility, not cheating: a modified client can claim any version. A player can set
+`cl_version_strict 1` to leave any server whose version isn't their client's.
+
 ## 6. Check that the port is running
 
 * The mod is listed as "The Specialists (Rust)", and the console shows

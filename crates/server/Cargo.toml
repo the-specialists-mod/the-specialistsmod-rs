@@ -10,6 +10,7 @@ name = "ts_server"
 
 [dependencies]
 goldsrc = { path = "../goldsrc", features = ["server"] }
+semver = { version = "1", default-features = false, features = ["std"] }
 shared  = { path = "../shared" }
 ts-gameplay = { path = "../gameplay" }
 ts-plugin-api = { path = "../plugin-api" }

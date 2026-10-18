@@ -17,6 +17,7 @@ mod status;
 pub(crate) mod statusbar;
 pub mod text;
 mod tfc;
+mod version;
 pub mod vgui;
 mod weapons;
 
@@ -358,6 +359,7 @@ fn apply_effect(f: Effect) {
     let e = engine();
     match f {
         Effect::GameplayRuleset(id) => e.print(&format!("[ts] gameplay: the server runs ruleset {id}\n")),
+        Effect::ServerVersion(v) => version::apply(v),
         Effect::Sound(name) => e.play_sound(name, 1.0),
         // At `gHUD.m_vecOrigin`, the client data origin (`0x1004bf6e`).
         Effect::GoSlow => {
@@ -586,13 +588,17 @@ pub fn init() {
     // Port addition: the client's version in its userinfo (`FCVAR_USERINFO`, 2), which tells the
     // server this is the port's client (`shared::protocol::port`).
     Cvar::register(shared::protocol::port::USERINFO_KEY_C, shared::protocol::port::VERSION_C, 2);
+    version::register();
     let e = engine();
     // GoldSrc (Steam HL) only copies a `FCVAR_USERINFO` cvar into the userinfo when it is set, not
     // when it is registered (FWGS does both), so without a set the key is missing and a 2.1 server
-    // refuses the port's client as TS 3.0's. The client API sets cvars only from a float
-    // (`Cvar_SetValue`), which puts `1` in the userinfo at once; the version string goes in by
-    // a command, which runs only after the command line's (`+connect`, `+exec`).
-    e.cvar_set(shared::protocol::port::USERINFO_KEY_C, 1.0);
+    // refuses the port's client as TS 3.0's. The documented client API sets cvars only from a
+    // float (`Cvar_SetValue`), which puts the version as one number in the userinfo at once
+    // (`port::numeric_version`, so a version-checking server can read it at a `+connect`); the
+    // version string goes in by a command, which runs only after the command line's (`+connect`,
+    // `+exec`).
+    let numeric = shared::protocol::port::numeric_version(shared::protocol::port::version_numbers());
+    e.cvar_set(shared::protocol::port::USERINFO_KEY_C, numeric.unwrap_or(1.0));
     e.client_cmd(&format!("{} {}\n", shared::protocol::port::USERINFO_KEY, shared::protocol::port::VERSION));
     for (m, name, _) in MESSAGES {
         // The engine parses ScreenShake and ScreenFade itself (FWGS cl_parse.c; GoldSrc
