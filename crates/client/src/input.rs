@@ -240,7 +240,7 @@ pub fn dev_input_allowed() -> bool {
 /// still and mouse motion moves the virtual cursor. Clicks go to the menu only when a menu owns
 /// it (`mouse_event`); an extension gets them as keys through `HUD_Key_Event`.
 pub fn cursor_owned() -> bool {
-    crate::menus::wants_cursor() || crate::ext::cursor_wanted()
+    crate::plugins::offers::wants_cursor() || crate::menus::wants_cursor() || crate::ext::cursor_wanted()
 }
 
 /// TS `FUN_10023450`: gated `+forward`/`+back`/`+moveleft`/`+moveright`/`+attack`/`+attack2`/
@@ -816,6 +816,14 @@ pub fn deactivate_mouse() {
 /// SDK `IN_MouseEvent`: forward button edges to the engine as K_MOUSE1.. keys, except that
 /// clicks go to the open menu while it shows the cursor (TS routes them to `CTSBuyMenu`).
 pub fn mouse_event(mstate: i32) {
+    // Port addition: an offer card (client-plugins.md §7.3) takes the clicks first, whatever
+    // else holds the mouse; clicks reach it only from here, never from a key or a bind.
+    if crate::plugins::offers::wants_cursor() {
+        let old = mouse(|m| std::mem::replace(&mut m.old_buttons, mstate));
+        let (x, y) = cursor();
+        crate::plugins::offers::mouse(mstate, old, x, y);
+        return;
+    }
     // TS's `IN_MouseEvent` (100273d0) ignores the buttons while the camera holds the mouse.
     if crate::camera::mouse_in_use() {
         return;

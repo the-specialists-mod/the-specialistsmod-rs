@@ -147,7 +147,7 @@ impl Ctx {
     }
 
     /// `libtsmod_client_test.so` / `tsmod_client_test.dll` for `t`.
-    fn client_stub(&self, t: &Target) -> PathBuf {
+    pub(crate) fn client_stub(&self, t: &Target) -> PathBuf {
         self.client_stub_dir(t).join(if t.os == Os::Windows { "tsmod_client_test.dll" } else { "libtsmod_client_test.so" })
     }
 

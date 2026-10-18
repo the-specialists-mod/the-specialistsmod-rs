@@ -2,9 +2,9 @@
 //! issue #298). The server sends `TSPkg` only to port clients from `port::TSPKG_SINCE` on, so
 //! every such client must hook it: a GoldSrc client can fail on a user message it hasn't hooked.
 //!
-//! Until the offer flow (cards, downloads, approval: issue #299) is built, the hook reassembles
-//! and decodes each body and prints it to the console, and answers nothing. Op 5 prints the
-//! version the server needs, which is all a player can act on until the update card exists.
+//! The hook reassembles and decodes each body, prints it to the console, and hands it to the
+//! offer flow (`crate::plugins::offers`, issue #299): offers, withdrawals and op 5's card. Ops 3
+//! and 4 are only printed until enforcement (#302).
 
 use goldsrc::Global;
 use shared::protocol::tspkg::{Message, Reassembler};
@@ -16,19 +16,21 @@ static REASSEMBLER: Global<RefCell<Option<Reassembler>>> = Global(RefCell::new(N
 /// interception hooks never see it).
 pub fn on_message(buf: &[u8]) {
     let got = REASSEMBLER.0.borrow_mut().get_or_insert_with(Reassembler::default).push(buf);
-    let line = match got {
-        Ok(None) => return,
-        Ok(Some(m)) => describe(&m),
-        Err(e) => format!("[ts] tspkg: a TSPkg the client can't read: {e}\n"),
-    };
-    goldsrc::client::engine().print(&line);
+    match got {
+        Ok(None) => {}
+        Ok(Some(m)) => {
+            goldsrc::client::engine().print(&describe(&m));
+            crate::plugins::offers::on_message(&m);
+        }
+        Err(e) => goldsrc::client::engine().print(&format!("[ts] tspkg: a TSPkg the client can't read: {e}\n")),
+    }
 }
 
 /// The console line for a body.
 pub fn describe(m: &Message) -> String {
     match m {
         Message::Offer(o) => format!(
-            "[ts] tspkg: the server offers the client plugin {} {} ({} bytes{}, {}){}; offers aren't handled yet (#299)\n",
+            "[ts] tspkg: the server offers the client plugin {} {} ({} bytes{}, {}){}\n",
             o.id,
             o.version,
             o.size,
@@ -64,7 +66,7 @@ mod tests {
         });
         assert!(
             describe(&o)
-                .starts_with("[ts] tspkg: the server offers the client plugin demo 0.1.0 (10 bytes, required, http://h/p.tspkg): hi;")
+                .starts_with("[ts] tspkg: the server offers the client plugin demo 0.1.0 (10 bytes, required, http://h/p.tspkg): hi\n")
         );
     }
 }

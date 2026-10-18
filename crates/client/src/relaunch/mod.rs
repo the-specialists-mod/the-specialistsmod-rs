@@ -17,7 +17,7 @@
 //! Commands (port additions): `tsrs_reconnect <address> [password]` (what the relaunch runs; it
 //! can do nothing a stuffed `connect` can't), and the dev aid `ts_dev_restart [restart | port
 //! <requirement> [<url>] | plugin <id@version>]`, which requests a restart from the server the
-//! client is on (until op 5 and plugin updates, #298, #299 and #302, call [`restart`]).
+//! client is on (op 5's card and plugin updates call [`restart`] too: `crate::plugins::offers`, #299).
 
 pub mod args;
 pub mod card;

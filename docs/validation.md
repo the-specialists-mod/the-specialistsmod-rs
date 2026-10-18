@@ -85,7 +85,8 @@ cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath,
 cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
 cargo xtask version [<root>...]         # the port client's version check at connect, Linux roots one by one (~1.5 min each, §2.z)
 cargo xtask relaunch [--xvfb] [fwgs fwgs-win]  # restart and reconnect end to end, one root after the other (~5 min each, §2.r)
-cargo xtask tspkg [<root>...]           # server offers of client plugins (TSPkg, tspkg, op 5), Linux roots one by one (§2.z2)
+cargo xtask tspkg [<root>...]           # server offers of client plugins (TSPkg, tspkg, op 5) and the client's offer
+                                          # flow (cards, downloads, update, op 5's card), Linux roots one by one (§2.z2)
 cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
@@ -367,9 +368,49 @@ offer of the same file under another id with a wrong hash. The port's FWGS clien
    an older port client) gets nothing, and joins. On the Steam engines, when
    `~/games/xash_win_orig` exists, the original client gets no offer and joins.
 
-Client logs go to `target/version-client-<root>-tspkg-*.log`. Not in `all`: run it after changes
-to `plugin_offers`, `shared::protocol::tspkg` or the connect path. The client's offer flow (cards,
-downloads) is #299's, with its own e2e (§11 of client-plugins.md).
+The client's side (issue #299, `xtask/src/tspkg_client.rs`, client-plugins.md §11 e2e 2–4): the
+`fwgs` root gets the e2e client for the whole run (`--features e2e`, as `cargo xtask relaunch`
+builds it, with `ts-launcher-fake` in `<fwgs>/xtask_launcher/`; the normal client is put back at
+the end), its approval store is set aside, and xtask serves `<root>/ts` on `127.0.0.1:27999/ts`
+(the servers' `sv_downloadurl`) as a FastDL stand-in that can serve other bytes than the server
+checked. `TSRS_E2E_CARDS` answers the in-game cards and records them in `<file>.shown`
+(`target/tspkg-client/<root>-cards.txt`):
+
+4. Four offers of quiet stub extensions (crates/tsmod-client-test) on port + 4: `quietoffer`
+   0.1.0, answered "Allow on this server only", must answer `offered`, `downloading`, `loaded`, be
+   installed under `cl_plugins/quietoffer/0.1.0/`, approved for that address only with every
+   file's hash, and load late (`quiet stub init`); `quiettamper` (FastDL changes a byte) fails on
+   the SHA-256 after its card; `quietbadsig` (FastDL breaks the `.manifest.sig`) and
+   `quietunsigned` (unsigned over plain HTTP) fail before any card, and their packages are never
+   requested; nothing of them is left in `cl_plugins/`. The client's `tspkg list` reaches the
+   server (`plugins: none`).
+5. The same server (same port, so 0.1.0 loads on connecting) offers 0.2.0: the update card
+   ("0.1.0 -> 0.2.0") is answered "Install update", the client answers `restart` (0.1.0 is
+   loaded), and the "Restart now" card's answer makes `relaunch::restart` start
+   `ts-launcher-fake relaunch ... --reason plugin --plugin quietoffer@0.2.0` from a
+   `ts/launcher.toml` the test writes. The store then holds 0.2.0 only; 0.1.0's directory stays
+   until the next start.
+6. A server with `sv_client_version ">=99.0.0"` offering 0.2.0 (port + 5): at start 0.1.0 is
+   removed and 0.2.0 loads; the offer answers `have`, `tspkg list` names `quietoffer@0.2.0`, and
+   op 5's card, answered "Restart to update", sends `tspkg tsrs <version> restart` and starts the
+   fake launcher with `--reason port --port-version >=99.0.0`.
+
+Run under a private X server when there's no desktop (`DISPLAY=:90 SDL_VIDEODRIVER=x11`, no
+`WAYLAND_DISPLAY`). Client logs go to `target/version-client-<root>-tspkg-*.log`. Not in `all`:
+run it after changes to `plugin_offers`, `shared::protocol::tspkg`, `ts_client::plugins` or the
+connect path. Not covered: a real mouse click on the cards (the hook answers them without drawing;
+#318), downloads over HTTPS, and Windows clients.
+
+**FWGS servers drop user messages to clients that aren't spawned** (`SV_Multicast`), so the
+server sends op 5 and the offers at the player's first `PlayerPostThink` after
+`ClientPutInServer`, not from `ClientPutInServer` itself (#317; before that, checks 1 and 2 of
+this test failed on the `fwgs` root).
+
+**2026-10-18** (dev profile, Xvfb `:90`): on `fwgs`, `rehlds-linux` and `hlds25-linux` every check of 1, 2
+and 4–6 passes, and 3 for the port client. "3: the original client joins" fails on `rehlds-linux`
+and `hlds25-linux` under Xvfb: TS 3.0's client (FWGS 0.21 win32, Wine) connects but never enters
+the game, with or without this change's server part (checked by hand with it reverted), so the
+Wine client under Xvfb is suspect; it isn't sent anything (#320).
 
 ## 3. Results
 

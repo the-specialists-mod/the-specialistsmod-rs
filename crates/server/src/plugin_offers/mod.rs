@@ -264,9 +264,28 @@ pub fn client_disconnect(e: *mut edict_t) {
     client(e, |c| *c = Client::default());
 }
 
-/// `ClientPutInServer`: op 5 if the version check asked for it, then every offer, to a client
-/// that hooks `TSPkg`. Nothing is sent to any other client (§12).
+/// `ClientPutInServer`: op 5 and the offers are due, at the player's first `PlayerPostThink`
+/// ([`client_ready`]). Not now: FWGS's server drops user messages to a client that isn't
+/// spawned yet (`SV_Multicast`, engine/server/sv_game.c: `cl->state != cs_spawned &&
+/// usermessage`), and at `ClientPutInServer` it isn't; GoldSrc queues them, but both run
+/// `PlayerPostThink` only for spawned clients (issue #317).
 pub fn client_put_in_server(e: *mut edict_t) {
+    if e.is_null() || e.v().flags & FL_FAKECLIENT as i32 != 0 {
+        return;
+    }
+    client(e, |c| c.put_pending = true);
+}
+
+/// `PlayerPostThink`: the first one after `ClientPutInServer` sends what it left due.
+pub fn client_ready(e: *mut edict_t) {
+    if client(e, |c| std::mem::replace(&mut c.put_pending, false)) == Some(true) {
+        send_put_in_server(e);
+    }
+}
+
+/// Op 5 if the version check asked for it, then every offer, to a client that hooks `TSPkg`.
+/// Nothing is sent to any other client (§12).
+fn send_put_in_server(e: *mut edict_t) {
     if e.is_null() || e.v().flags & FL_FAKECLIENT as i32 != 0 {
         return;
     }

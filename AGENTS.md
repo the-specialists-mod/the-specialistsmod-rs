@@ -148,7 +148,9 @@ cargo xtask relaunch [--xvfb] [fwgs fwgs-win]
 cargo xtask tspkg [<root>...]             # server offers of client plugins on each Linux root's dedicated server:
                                           # plugin_offers.toml and the package checks, TSPkg to the FWGS port client,
                                           # tspkg replies, the required-offer kick, op 5; nothing to clients that
-                                          # don't hook TSPkg (not in all)
+                                          # don't hook TSPkg; then the client's offer flow with the e2e client and a
+                                          # FastDL stand-in: cards, downloads, tampered packages, an update, op 5's
+                                          # card through ts-launcher-fake (not in all; Xvfb without a desktop)
 cargo xtask plugin-offer [--required] <tspkg>
                                           # check a built package, write its .manifest.toml/.sig/.cert siblings,
                                           # print its plugin_offers.toml entry
@@ -206,7 +208,9 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   Client extensions load only if approved (`cl_plugins/approved.toml`, the start-up prompt, or
   `cargo xtask plugin-approve`); debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
   (docs/implementation/client-ext-api.md §3) and `TSRS_DEV_PLUGIN_PROMPT=<id>=<answer>,...`, which
-  answers the start-up boxes (client-plugins.md §7.1). Release builds ignore both.
+  answers the start-up boxes (client-plugins.md §7.1). Release builds ignore both. `--features e2e`
+  client builds (only `cargo xtask relaunch` and `tspkg` build them) answer the relaunch and offer
+  cards from `TSRS_E2E_CARDS=<file>` (client-plugins.md §11). Nothing approves from the console.
   `ts_dev_extlog 1` (client) logs the extensions' interception decisions as `[ts ext]` lines
   (client-ext-api.md §11).
 - `ts_dev_tspkg 1` (server) counts every port client as hooking `TSPkg`: builds between releases

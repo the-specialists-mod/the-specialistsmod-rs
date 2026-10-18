@@ -85,7 +85,9 @@ crates/
                  fixture for `cargo xtask client-plugins`)
   client/        ts-client: client game logic (rlib, no unsafe); `plugins` verifies the client
                  plugins at start, asks about new or changed ones and is the extension loader's
-                 approval gate (implementation/client-plugins.md §5, §7.1)
+                 approval gate (implementation/client-plugins.md §5, §7.1); `plugins::offers`
+                 handles a server's offers: in-game cards, downloads on worker threads (ureq,
+                 rustls), install and late loading (§6.3, §7.2)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll; also loads
                  the client extensions (ext.rs; the logic is ts-client's `ext`)
 xtask/           build, dist, install, server tests
@@ -107,9 +109,9 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch), through `ham` (the plugins' entity hooks, `implementation/plugin-api.md` §7). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
 | worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, `rules::install` (installs the rules, the multiplayer voice icon, queues the server config), soundent and body queue, sentences and texture types, then `precache::{w_precache, client_precache, ts_precache, world_sounds_and_gibs}` (TS's map-wide precaches in TS's order, so model/sound/event indices match), light styles, `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
-| `ClientPutInServer` | creates the `Player` entity and spawns it |
+| `ClientPutInServer` | creates the `Player` entity and spawns it; marks op 5 and the client plugin offers due (`plugin_offers`, sent at the first `PostThink`: FWGS drops user messages to clients not yet spawned, #317) |
 | `ClientCommand` | `commands::client_command`: the `tsmod_*` plugins first (one may swallow it), then the port's `tspkg` replies (`plugin_offers`), then weapons, stunt, rules, the active bot backend, in that order |
-| `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3), through `ham` |
+| `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3), through `ham`; after `PostThink`, `plugin_offers::client_ready` |
 | `StartFrame` | `bot_backend::start_frame` (the quota, then the active backend's bots: for native, each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), the `tsmod_*` plugins' `start_frame` (a plugin backend runs its bots here), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots, and the plugins' weapon/ammo callbacks) |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
