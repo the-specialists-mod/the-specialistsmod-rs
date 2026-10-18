@@ -13,6 +13,10 @@
 //! through [`crate::relaunch::restart`]). Op 5 shows the port version card, whose button also
 //! restarts through `relaunch` (a port update always goes through the launcher, which asks).
 //!
+//! Ops 3 `require` and 4 `block` ([`enforce`], §13.3, issue #302) suspend a blocked plugin until
+//! the player leaves the server (`ext::suspend`), or offer the restart card when an approved
+//! version the server needs is installed but another is loaded.
+//!
 //! Nothing here approves without a click on a card (§7.3): no console command, and nothing a
 //! server sends. `cl_plugins_cancel` (port addition) only stops downloads.
 //!
@@ -22,6 +26,7 @@
 pub mod card;
 #[cfg(feature = "e2e")]
 mod e2e;
+pub mod enforce;
 pub mod fetch;
 pub mod flow;
 
@@ -33,7 +38,7 @@ use flow::{Admit, Assessment, CardInfo, Connection, Transport};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
 use plugin_pkg::{Scope, Verdict, Verification};
-use shared::protocol::tspkg::{Message, Offer, PORT_ID, Reply, State as Answer, list_commands};
+use shared::protocol::tspkg::{BlockAction, Message, Offer, PORT_ID, Reply, State as Answer, list_commands};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -82,6 +87,8 @@ struct Conn {
     seen: Connection,
     slots: Vec<Slot>,
     port_card: bool,
+    /// Ids whose restart card was queued this connection (once each).
+    restarts: std::collections::BTreeSet<String>,
 }
 
 struct Offers {
@@ -156,6 +163,7 @@ pub fn on_message(m: &Message) {
     let Some(server) = server_address() else { return };
     connection(&server);
     send_list();
+    let server = server.as_str();
     match m {
         Message::Offer(o) => receive(o),
         Message::Withdraw { id, version } => withdraw(id, version),
@@ -167,8 +175,80 @@ pub fn on_message(m: &Message) {
                 o.queue.push_back(Pending::Port { requirement: requirement.clone(), url: url.clone() });
             }
         }),
-        // Ops 3 and 4 are enforcement (#302): printed only.
-        Message::Require { .. } | Message::Block { .. } => {}
+        Message::Require { id, requirement, .. } => require(server, id, requirement),
+        Message::Block { id, requirement, action, reason } => block(id, requirement, *action, reason),
+    }
+}
+
+/// The HUD has the server's version (`SrvSett` 5–7, at each map): a new game, so the plugin list
+/// goes again (the server forgets it at the map change's reconnect). A server whose version
+/// understands `tspkg` gets it now, so a server with blocks or a policy but nothing to offer
+/// learns it too; any other gets it after its first `TSPkg` (builds between releases report
+/// the last release's version).
+pub fn new_game(server_version: [i16; 3]) {
+    with(|o| {
+        if let Some(c) = o.conn.as_mut() {
+            c.seen.listed = false;
+        }
+    });
+    if !shared::protocol::port::hooks_tspkg(server_version) {
+        return;
+    }
+    let Some(server) = server_address() else { return };
+    connection(&server);
+    send_list();
+}
+
+/// Op 4 (§13.3): suspends the loaded plugins it names until the player leaves this server, or
+/// says the server disconnects players who use them.
+fn block(id: &str, requirement: &str, action: BlockAction, reason: &str) {
+    let req = match enforce::requirement(requirement) {
+        Ok(r) => r,
+        Err(e) => return say(&format!("a block of {id} the client can't read: {e}")),
+    };
+    let loaded = super::loaded_plugins();
+    let hits = enforce::blocked(&loaded, id, &req);
+    if hits.is_empty() {
+        return say(&format!("the server blocks {id} {requirement}, which isn't loaded"));
+    }
+    for p in hits {
+        if action == BlockAction::Kick {
+            say(&format!("this server doesn't allow {} {} and disconnects players who use it", p.id, p.version));
+            continue;
+        }
+        let why = if reason.is_empty() { "blocked by this server" } else { reason };
+        let now = crate::ext::suspend(&p.ext, why);
+        say(&format!("{} {} suspended while on this server: {why}{}", p.id, p.version, if now { "" } else { " (already)" }));
+        reply(&p.id, &p.version, Answer::Suspended, reason);
+    }
+}
+
+/// Op 3 (§13.3): when the loaded version doesn't fit and an approved one that does is installed,
+/// `restart` and the restart card; when none is, the server's offer brings the update card.
+fn require(server: &str, id: &str, requirement: &str) {
+    let req = match enforce::requirement(requirement) {
+        Ok(r) => r,
+        Err(e) => return say(&format!("a requirement for {id} the client can't read: {e}")),
+    };
+    // An offer of it is being handled: its card (or its restart card) does the rest.
+    if with(|o| o.conn.as_ref().is_some_and(|c| c.slots.iter().any(|s| s.offer.id == id))) {
+        return;
+    }
+    let loaded = super::loaded_plugins();
+    let decision = super::with(|s| enforce::require(&loaded, id, &req, &s.store, s.opts.platform, server, &s.dirs.cl_plugins));
+    match decision {
+        None | Some(enforce::Require::Nothing) => {}
+        Some(enforce::Require::AwaitOffer { loaded }) => {
+            say(&format!("{id} {loaded} is loaded and this server needs {requirement}: accept its offer to update"))
+        }
+        Some(enforce::Require::Restart(v)) => {
+            if !with(|o| o.conn.as_mut().is_some_and(|c| c.restarts.insert(id.to_owned()))) {
+                return;
+            }
+            let version = v.to_string();
+            reply(id, &version, Answer::Restart, &format!("needs {requirement}"));
+            with(|o| o.queue.push_back(Pending::Restart { id: id.to_owned(), version, name: id.to_owned() }));
+        }
     }
 }
 
@@ -178,7 +258,15 @@ fn connection(server: &str) {
     let stale = with(|o| o.conn.as_ref().is_some_and(|c| c.server != server) || o.conn.is_none());
     if stale {
         reset();
-        with(|o| o.conn = Some(Conn { server: server.to_owned(), seen: Connection::default(), slots: Vec::new(), port_card: false }));
+        with(|o| {
+            o.conn = Some(Conn {
+                server: server.to_owned(),
+                seen: Connection::default(),
+                slots: Vec::new(),
+                port_card: false,
+                restarts: Default::default(),
+            })
+        });
     }
 }
 
@@ -197,26 +285,13 @@ fn reset() {
     });
 }
 
-/// `tspkg list`, once per connection after the first `TSPkg` (§13.2): every loaded plugin.
+/// `tspkg list`, once per map, after the first `TSPkg` or the server's version ([`new_game`], §13.2): every
+/// loaded plugin.
 fn send_list() {
     if with(|o| o.conn.as_mut().map(|c| std::mem::replace(&mut c.seen.listed, true))) != Some(false) {
         return;
     }
-    let loaded = crate::ext::loaded();
-    let list: Vec<(String, String)> = super::with(|s| {
-        s.items
-            .iter()
-            .filter(|it| loaded.contains(&it.name))
-            .map(|it| {
-                let version = match &it.decision {
-                    Decision::Allowed { v, .. } => v.version.as_ref().map_or_else(|| "0.0.0".into(), ToString::to_string),
-                    Decision::Skip(_) => "0.0.0".into(),
-                };
-                (it.candidate.id(), version)
-            })
-            .collect()
-    })
-    .unwrap_or_default();
+    let list: Vec<(String, String)> = super::loaded_plugins().into_iter().map(|p| (p.id, p.version)).collect();
     match list_commands(&list) {
         Ok(cmds) => cmds.iter().for_each(|c| engine().server_cmd(c)),
         Err(e) => say(&format!("can't list the loaded plugins: {e}")),
@@ -538,7 +613,12 @@ fn install_done(key: u32, result: Result<Box<Verification>, String>) {
         Some(Ok(Installed::Restart)) => {
             reply(&o.id, &o.version, Answer::Restart, "restart to finish");
             let name = info.checked.manifest.name.clone();
-            with(|w| w.queue.push_back(Pending::Restart { id: o.id.clone(), version: o.version.clone(), name }));
+            with(|w| {
+                if let Some(c) = w.conn.as_mut() {
+                    c.restarts.insert(o.id.clone());
+                }
+                w.queue.push_back(Pending::Restart { id: o.id.clone(), version: o.version.clone(), name })
+            });
         }
         Some(Ok(Installed::Later)) => reply(&o.id, &o.version, Answer::Installed, ""),
         Some(Ok(Installed::Load(c))) => {

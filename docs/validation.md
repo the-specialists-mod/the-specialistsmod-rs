@@ -85,8 +85,9 @@ cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath,
 cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
 cargo xtask version [<root>...]         # the port client's version check at connect, Linux roots one by one (~1.5 min each, §2.z)
 cargo xtask relaunch [--xvfb] [fwgs fwgs-win]  # restart and reconnect end to end, one root after the other (~5 min each, §2.r)
-cargo xtask tspkg [<root>...]           # server offers of client plugins (TSPkg, tspkg, op 5) and the client's offer
-                                          # flow (cards, downloads, update, op 5's card), Linux roots one by one (§2.z2)
+cargo xtask tspkg [<root>...]           # server offers of client plugins (TSPkg, tspkg, op 5), the client's offer
+                                          # flow (cards, downloads, update, op 5's card) and enforcement (blocks,
+                                          # match, unlisted), Linux roots one by one (§2.z2)
 cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
@@ -366,7 +367,9 @@ offer of the same file under another id with a wrong hash. The port's FWGS clien
    with the `[tsrs:>=99.0.0]` tag.
 3. Without `ts_dev_tspkg`: the offer is still checked, but the client (below `TSPKG_SINCE`, like
    an older port client) gets nothing, and joins. On the Steam engines, when
-   `~/games/xash_win_orig` exists, the original client gets no offer and joins.
+   `~/games/xash_win_orig` exists, the original client gets no offer and joins. Both run with
+   `[policy] unlisted = "kick"` and a `[[block]] id = "manual:*"` kick block added (#302), and
+   neither is kicked: nothing is enforced on clients that don't hook `TSPkg`.
 
 The client's side (issue #299, `xtask/src/tspkg_client.rs`, client-plugins.md §11 e2e 2–4): the
 `fwgs` root gets the e2e client for the whole run (`--features e2e`, as `cargo xtask relaunch`
@@ -395,6 +398,26 @@ checked. `TSRS_E2E_CARDS` answers the in-game cards and records them in `<file>.
    op 5's card, answered "Restart to update", sends `tspkg tsrs <version> restart` and starts the
    fake launcher with `--reason port --port-version >=99.0.0`.
 
+Enforcement (issue #302, client-plugins.md §13.2, §13.3), on port + 6, with the loaded
+`quietoffer` (the quiet stub prints `quiet stub suspended: <reason>` and `quiet stub resumed after
+<n> callbacks while suspended`, counting its `frame` and `redraw` calls in between):
+
+7. `[[block]] id = "quietoffer" versions = "*"` (suspend) beside the 0.2.0 offer,
+   `sv_plugin_check_time 5`: the server logs `quietoffer 0.2.0: [[block]] quietoffer *: suspend`
+   and sends op 4; the client suspends it with the block's reason and answers `suspended`;
+   `cl_plugins_list` shows "loaded, suspended by this server (xtask block)"; the script's
+   `disconnect` resumes it with 0 callbacks in between; nobody is kicked.
+8. The same block with `action = "kick"`: op 4 kick, and the server kicks with "This server blocks
+   the client plugin quietoffer 0.2.0: xtask kick"; the client prints that the server doesn't
+   allow it.
+9. A required `match = "exact"` offer of 0.3.0, `sv_plugin_required_kick 1`,
+   `sv_plugin_check_time 3`, `sv_plugin_download_time 10`: the update card ("0.2.0 -> 0.3.0")
+   answered "Install update", `restart`, one restart card (answered "Later"), op 3 `require
+   =0.3.0` for the loaded 0.2.0, and the kick after `sv_plugin_download_time` naming the plugin.
+10. 0.3.0 loads at the next start; a server offering only `quietother` with `[policy] unlisted =
+    "suspend"` suspends `quietoffer` 0.3.0 as unlisted ("not allowed on this server"), and the
+    other offer is answered as usual.
+
 Run under a private X server when there's no desktop (`DISPLAY=:90 SDL_VIDEODRIVER=x11`, no
 `WAYLAND_DISPLAY`). Client logs go to `target/version-client-<root>-tspkg-*.log`. Not in `all`:
 run it after changes to `plugin_offers`, `shared::protocol::tspkg`, `ts_client::plugins` or the
@@ -411,6 +434,11 @@ and 4–6 passes, and 3 for the port client. "3: the original client joins" fail
 and `hlds25-linux` under Xvfb: TS 3.0's client (FWGS 0.21 win32, Wine) connects but never enters
 the game, with or without this change's server part (checked by hand with it reverted), so the
 Wine client under Xvfb is suspect; it isn't sent anything (#320).
+
+**2026-10-18, enforcement (#302)** (dev profile, Xvfb `:92`): on `fwgs`, `rehlds-linux` and
+`hlds25-linux` every check of 1–10 passes but "3: the original client joins" on the two Steam
+engines (#320, unchanged); "3: the policy doesn't kick the original client" passes there.
+`cargo xtask client-plugins fwgs` passes.
 
 ## 3. Results
 

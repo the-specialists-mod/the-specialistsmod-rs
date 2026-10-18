@@ -123,7 +123,7 @@ extension gets nothing but `resume` and `shutdown`.
 | `wants_cursor() -> bool` | once a frame, from `HUD_Frame`. True takes the mouse: the view holds still and mouse motion moves the port's virtual cursor, as for the port's menus (`input::cursor_owned`) |
 | `usercmd(cmd)` | the end of `CL_CreateMove`: a copy with `buttons` (TS's bit map, the `button` module), `pressed`/`released` edges against the previous command, view angles, moves, `impulse`, `weaponselect`, `active` |
 | `game_event(event)` | after the HUD handled a message (§5) |
-| `suspend(reason)` / `resume()` | `ts_client::ext::suspend`/`resume`: a server's `block` with `suspend` (client-plugins.md §13.3, not built yet), the dev aid `ts_dev_extsuspend`; a server change resumes every suspended extension |
+| `suspend(reason)` / `resume()` | `ts_client::ext::suspend`/`resume`: a server's `block` with `suspend` (client-plugins.md §13.3, #302; the reason shows in `cl_plugins_list`), the dev aid `ts_dev_extsuspend`; a server change (a new address or a disconnect) resumes every suspended extension, with a console line |
 | `server_changed(address)` | `HUD_Frame`, when the net API's server changes: `loopback`, `a.b.c.d:port`, or `""` on disconnect |
 | `shutdown()` | `HUD_Shutdown`, even while suspended |
 | `user_message(channel, data, len)` (minor 1) | a `TSExt` message on a channel the extension claimed (§10) |

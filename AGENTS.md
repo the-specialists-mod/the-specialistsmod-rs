@@ -150,7 +150,9 @@ cargo xtask tspkg [<root>...]             # server offers of client plugins on e
                                           # tspkg replies, the required-offer kick, op 5; nothing to clients that
                                           # don't hook TSPkg; then the client's offer flow with the e2e client and a
                                           # FastDL stand-in: cards, downloads, tampered packages, an update, op 5's
-                                          # card through ts-launcher-fake (not in all; Xvfb without a desktop)
+                                          # card through ts-launcher-fake; enforcement: a [[block]] suspending (resumed
+                                          # on leaving) and kicking, a required match with op 3 and the
+                                          # sv_plugin_download_time kick, unlisted (not in all; Xvfb without a desktop)
 cargo xtask plugin-offer [--required] <tspkg>
                                           # check a built package, write its .manifest.toml/.sig/.cert siblings,
                                           # print its plugin_offers.toml entry

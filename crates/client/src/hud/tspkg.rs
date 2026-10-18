@@ -3,8 +3,8 @@
 //! every such client must hook it: a GoldSrc client can fail on a user message it hasn't hooked.
 //!
 //! The hook reassembles and decodes each body, prints it to the console, and hands it to the
-//! offer flow (`crate::plugins::offers`, issue #299): offers, withdrawals and op 5's card. Ops 3
-//! and 4 are only printed until enforcement (#302).
+//! offer flow (`crate::plugins::offers`, issues #299, #302): offers, withdrawals, op 5's card, and
+//! ops 3 and 4.
 
 use goldsrc::Global;
 use shared::protocol::tspkg::{Message, Reassembler};
@@ -40,7 +40,10 @@ pub fn describe(m: &Message) -> String {
         ),
         Message::Withdraw { id, version } => format!("[ts] tspkg: the server withdrew its offer of {id} {version}\n"),
         Message::Require { id, requirement, .. } => format!("[ts] tspkg: the server requires {id} {requirement}\n"),
-        Message::Block { id, requirement, reason, .. } => format!("[ts] tspkg: the server blocks {id} {requirement}: {reason}\n"),
+        Message::Block { id, requirement, reason, action } => format!(
+            "[ts] tspkg: the server blocks {id} {requirement} ({}): {reason}\n",
+            if *action == shared::protocol::tspkg::BlockAction::Kick { "kick" } else { "suspend" }
+        ),
         Message::PortVersion { requirement, url } => {
             format!("[ts] version: this server needs The Specialists port {requirement}; get it via the TS launcher or {url}\n")
         }

@@ -21,6 +21,21 @@
 //!    the superseded 0.1.0 is removed and 0.2.0 loads; the offer answers `have`, the `tspkg list`
 //!    names it, and the port card's "Restart to update" sends `tspkg tsrs ... restart` and starts
 //!    the fake launcher with `--reason port --port-version >=99.0.0`.
+//!
+//! Enforcement (issue #302, client-plugins.md §13.2, §13.3), on the loaded `quietoffer` (the
+//! quiet stub prints its `suspend` and `resume`, and counts callbacks that come between):
+//!
+//! 7. **Block, suspend.** A `[[block]]` of every `quietoffer` version with `suspend`: the server
+//!    judges the `tspkg list`, sends op 4, the client suspends it and answers `suspended`
+//!    (`cl_plugins_list` says so); on `disconnect` it resumes, with no callback in between.
+//! 8. **Block, kick.** The same block with `kick`: op 4, and the server kicks naming the plugin,
+//!    its version and the block's reason.
+//! 9. **Required version.** A required `match = "exact"` offer of 0.3.0, with
+//!    `sv_plugin_required_kick 1` and `sv_plugin_download_time 10`: the update card (answered
+//!    "Install update"), `restart` and one restart card (answered "Later"), op 3 `require =0.3.0`,
+//!    and the kick once the download time is over, because 0.2.0 is still loaded.
+//! 10. **Unlisted.** `[policy] unlisted = "suspend"` and only another plugin offered: the loaded
+//!     `quietoffer` 0.3.0 is suspended as unlisted.
 
 use crate::Ctx;
 use crate::roots::Root;
@@ -112,7 +127,9 @@ const OFFER: &str = "quietoffer";
 const TAMPER: &str = "quiettamper";
 const BADSIG: &str = "quietbadsig";
 const UNSIGNED: &str = "quietunsigned";
-const IDS: [&str; 4] = [OFFER, TAMPER, BADSIG, UNSIGNED];
+/// Offered beside the policy of scenario 10.
+const OTHER: &str = "quietother";
+const IDS: [&str; 5] = [OFFER, TAMPER, BADSIG, UNSIGNED, OTHER];
 
 /// Builds `<gamedir>/plugins/<id>-<version>.tspkg` around the stub extension `lib`, writes its
 /// siblings and returns its `[[offer]]` entry.
@@ -433,10 +450,148 @@ impl Ctx {
         }
 
         let _ = fs::remove_file(fake_exe.with_file_name("ts-launcher-fake.cfg"));
+        c.extend(self.tspkg_enforce(root, fwgs, port + 2, &stub, dl, dev, &cards, &env));
         let _ = fs::remove_file(gamedir.join("plugin_offers.toml"));
         remove_packages(&gamedir);
         let _ = fs::remove_dir(gamedir.join("plugins"));
         restore(&client_dir);
+        c
+    }
+}
+
+impl Ctx {
+    /// Scenarios 7 to 10 (module docs) on `port`, after 6 left `quietoffer` 0.2.0 approved and
+    /// its package in `plugins/`.
+    #[allow(clippy::too_many_arguments)] // one scenario group's context, which tspkg_client holds
+    fn tspkg_enforce(
+        &self,
+        root: &Root,
+        fwgs: &Root,
+        port: u16,
+        stub: &Stub,
+        dl: &FastDl,
+        dev: &str,
+        cards: &Path,
+        env: &[(&str, String)],
+    ) -> Vec<(String, bool)> {
+        let gamedir = root.path.join("ts");
+        let shown_path = PathBuf::from(format!("{}.shown", cards.display()));
+        let begin = |answers: &str| {
+            fs::write(cards, answers).unwrap();
+            let _ = fs::remove_file(&shown_path);
+        };
+        let shown = || fs::read_to_string(&shown_path).unwrap_or_default();
+        let w = format!("{}\n", "wait;".repeat(20)).repeat(10);
+        let mut c: Vec<(String, bool)> = Vec::new();
+        let offer_020 =
+            crate::tspkg::plugin_offer(&gamedir.join("plugins").join(format!("{OFFER}-0.2.0.tspkg")), false).unwrap_or_default();
+        dl.set(&gamedir, BTreeMap::new());
+        let quick = format!("{dev}\nsv_plugin_check_time 5");
+
+        // 7: a block with suspend, resumed on leaving.
+        let block = format!("{offer_020}\n[[block]]\nid = \"{OFFER}\"\nversions = \"*\"\nreason = \"xtask block\"\n");
+        fs::write(gamedir.join("plugin_offers.toml"), &block).unwrap();
+        begin("");
+        crate::say!("== {}: a blocked plugin suspended, resumed on leaving (port {port})", root.name);
+        if let Some(server) = self.version_server(root, port, &quick) {
+            let middle = format!("{w}{w}{w}cl_plugins_list\n{w}disconnect\n{w}{w}");
+            let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-block-suspend", &middle, env);
+            let log = self.version_server_stop(root, server);
+            let sus = client.find("quiet stub suspended: xtask block");
+            let res = client.find("quiet stub resumed after 0 callbacks");
+            c.push((
+                "7: the server judges the list: [[block]] quietoffer *, op 4 suspend".into(),
+                log.contains(&format!("{OFFER} 0.2.0: [[block]] {OFFER} *: suspend"))
+                    && log.contains(&format!("block {OFFER} * (suspend) to")),
+            ));
+            c.push(("7: the client suspends it, with the block's reason".into(), sus.is_some()));
+            c.push(("7: and answers suspended".into(), log.contains(&format!(": {OFFER} 0.2.0 suspended xtask block"))));
+            c.push(("7: cl_plugins_list shows the suspension".into(), client.contains("loaded, suspended by this server (xtask block)")));
+            c.push((
+                "7: it resumes on leaving, with no callback while suspended".into(),
+                sus.zip(res).is_some_and(|(s, r)| r > s) && client.contains(&format!("{OFFER} resumed")),
+            ));
+            c.push(("7: no kick".into(), !log.contains("kicking")));
+            c.push(("7: no panic".into(), !client.contains("PANIC") && !log.contains("PANIC")));
+        } else {
+            c.push(("7: the server answered".into(), false));
+        }
+
+        // 8: a block with kick.
+        let kick = block.replace("reason = \"xtask block\"", "action = \"kick\"\nreason = \"xtask kick\"");
+        fs::write(gamedir.join("plugin_offers.toml"), kick).unwrap();
+        begin("");
+        crate::say!("== {}: a blocked plugin kicked (port {port})", root.name);
+        if let Some(server) = self.version_server(root, port, &quick) {
+            let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-block-kick", "", env);
+            let log = self.version_server_stop(root, server);
+            c.push(("8: op 4 kick is sent".into(), log.contains(&format!("block {OFFER} * (kick) to"))));
+            c.push((
+                "8: the server kicks, naming the plugin, its version and the reason".into(),
+                log.contains("kicking") && log.contains(&format!("This server blocks the client plugin {OFFER} 0.2.0: xtask kick")),
+            ));
+            c.push(("8: the client says why".into(), client.contains(&format!("doesn't allow {OFFER} 0.2.0"))));
+            c.push(("8: nothing was suspended".into(), !client.contains("quiet stub suspended")));
+        } else {
+            c.push(("8: the server answered".into(), false));
+        }
+
+        // 9: a required offer of another version: the update card, op 3, the grace kick.
+        let entry = package(self, &gamedir, stub, OFFER, "0.3.0", true)
+            .unwrap_or_default()
+            .replace("required = false", "required = true\nmatch = \"exact\"");
+        fs::write(gamedir.join("plugin_offers.toml"), &entry).unwrap();
+        begin(&format!("update:{OFFER}=install\n"));
+        crate::say!("== {}: a required version: update card, op 3, grace kick (port {port})", root.name);
+        let settings = format!("{dev}\nsv_plugin_required_kick 1\nsv_plugin_check_time 3\nsv_plugin_download_time 10");
+        if let Some(server) = self.version_server(root, port, &settings) {
+            let middle = w.repeat(6);
+            let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-required-version", &middle, env);
+            let log = self.version_server_stop(root, server);
+            let s = shown();
+            c.push((
+                "9: the update card shows 0.2.0 -> 0.3.0".into(),
+                s.contains(&format!("kind=update id={OFFER}")) && s.contains("0.2.0 -> 0.3.0") && s.contains("answer=install"),
+            ));
+            c.push(("9: the client answers restart".into(), log.contains(&format!(": {OFFER} 0.3.0 restart"))));
+            c.push((
+                "9: one restart card, answered Later".into(),
+                s.matches(&format!("kind=restart id={OFFER}")).count() == 1 && s.contains("answer=later"),
+            ));
+            c.push((
+                "9: op 3 require =0.3.0 for the loaded 0.2.0".into(),
+                log.contains(&format!("{OFFER} 0.2.0: match exact of the offer {OFFER} 0.3.0: require =0.3.0"))
+                    && client.contains(&format!("the server requires {OFFER} =0.3.0")),
+            ));
+            c.push((
+                "9: kicked after sv_plugin_download_time, the plugin named".into(),
+                log.contains("after sv_plugin_download_time")
+                    && log.contains(&format!("requires the client plugin xtask {OFFER} 0.3.0 (https://example.org/{OFFER})")),
+            ));
+            c.push(("9: no panic".into(), !client.contains("PANIC") && !log.contains("PANIC")));
+        } else {
+            c.push(("9: the server answered".into(), false));
+        }
+
+        // 10: `[policy] unlisted = "suspend"`, another plugin offered.
+        let other = package(self, &gamedir, stub, OTHER, "0.1.0", true).unwrap_or_default();
+        fs::write(gamedir.join("plugin_offers.toml"), format!("{other}\n[policy]\nunlisted = \"suspend\"\n")).unwrap();
+        begin("");
+        crate::say!("== {}: an unlisted plugin suspended (port {port})", root.name);
+        if let Some(server) = self.version_server(root, port, &quick) {
+            let client = self.fwgs_client_script_env(root, fwgs, port, "tspkg-unlisted", &w.repeat(2), env);
+            let log = self.version_server_stop(root, server);
+            c.push(("10: 0.3.0 loaded at start".into(), client.contains(&format!("loaded tsmod_{OFFER}"))));
+            c.push(("10: judged unlisted".into(), log.contains(&format!("{OFFER} 0.3.0: [policy] unlisted: suspend"))));
+            c.push((
+                "10: suspended and answered".into(),
+                client.contains("quiet stub suspended: not allowed on this server") && log.contains(&format!(": {OFFER} 0.3.0 suspended")),
+            ));
+            c.push(("10: the other offer is answered as usual".into(), log.contains(&format!(": {OTHER} 0.1.0 denied"))));
+            c.push(("10: no kick".into(), !log.contains("kicking")));
+        } else {
+            c.push(("10: the server answered".into(), false));
+        }
         c
     }
 }

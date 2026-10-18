@@ -2,8 +2,8 @@
 //! `[[block]]` list and `[policy]`. Parsed strictly (unknown keys refuse the file); an entry that
 //! breaks a rule is dropped with the reason, and the rest stay.
 //!
-//! `match`, `[[block]]` and `[policy] unlisted` are parsed and kept here; enforcing them is
-//! issue #302.
+//! `match`, `[[block]]` and `[policy] unlisted` are parsed and kept here; `super::enforce`
+//! applies them (§13.3, issue #302).
 
 use plugin_pkg::{Sha256, Version, VersionReq};
 use serde::Deserialize;
@@ -43,6 +43,16 @@ impl MatchRule {
             r => VersionReq::parse(r)
                 .map(MatchRule::Req)
                 .map_err(|e| format!("match {r:?} isn't exact, compatible, any or a requirement: {e}")),
+        }
+    }
+
+    /// The rule as a semver requirement, for op 3 (`=0.2.0`, `^0.2.0`, `*`, or the requirement).
+    pub fn requirement(&self, offered: &Version) -> String {
+        match self {
+            MatchRule::Exact => format!("={offered}"),
+            MatchRule::Compatible => format!("^{offered}"),
+            MatchRule::Any => "*".into(),
+            MatchRule::Req(r) => r.to_string(),
         }
     }
 
@@ -427,5 +437,12 @@ unlisted = "suspend"
         assert!(!m("compatible").accepts(&v("1.2.0"), &v("1.1.0")));
         assert!(m("any").accepts(&v("1.0.0"), &v("0.0.1")));
         assert!(m(">=0.2.0, <0.4").accepts(&v("0.2.0"), &v("0.3.5")) && !m(">=0.2.0, <0.4").accepts(&v("0.2.0"), &v("0.4.0")));
+        // Op 3's requirement says the same as `accepts`.
+        for rule in ["exact", "compatible", "any", ">=0.2.0, <0.4"] {
+            let req = VersionReq::parse(&m(rule).requirement(&v("0.2.0"))).unwrap();
+            for loaded in ["0.1.9", "0.2.0", "0.2.5", "0.3.0", "0.4.0", "1.0.0"] {
+                assert_eq!(req.matches(&v(loaded)), m(rule).accepts(&v("0.2.0"), &v(loaded)), "{rule} {loaded}");
+            }
+        }
     }
 }

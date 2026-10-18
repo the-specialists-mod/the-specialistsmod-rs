@@ -37,6 +37,7 @@ pub fn on_server_version(server: [i16; 3], own: [i16; 3], strict: bool) -> Optio
 
 /// The HUD has the server's full version (`SrvSett` 7 after 5 and 6).
 pub fn apply(server: [i16; 3]) {
+    crate::plugins::offers::new_game(server);
     let e = goldsrc::client::engine();
     let strict = Cvar::find(STRICT_CVAR).value() != 0.0;
     if let Some((line, disconnect)) = on_server_version(server, port::version_numbers(), strict) {

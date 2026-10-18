@@ -13,8 +13,13 @@
 //! * The client's `tspkg` answers ([`clients`]) are rate-limited, logged, and kept per client;
 //!   `sv_plugin_required_kick 1` kicks a player who refuses a required offer.
 //!
-//! `match`, `[[block]]` and `[policy]` are parsed and kept, and the client's `tspkg list` is
-//! recorded, for their enforcement (issue #302). The plugin API's `offer_client_plugin` and
+//! * `match`, `[[block]]` and `[policy] unlisted` are enforced on the client's `tspkg list`
+//!   ([`enforce`], §13.2, §13.3, issue #302): op 3 `require` for a version an offer's `match`
+//!   doesn't accept, op 4 `block` (suspend, or kick) for a blocked or unlisted plugin, and the
+//!   required-offer kick at `sv_plugin_download_time`. The server can suspend or kick; it can
+//!   never approve or load anything for the player (§7.3).
+//!
+//! The plugin API's `offer_client_plugin` and
 //! `client_plugin_state` wait for the API version after 8 (version 8 brought only `ext_message` and
 //! `client_port_version`, issues #294, #304); meanwhile an AMX Mod X plugin
 //! sees the `tspkg` client command first and can offer through `sv_plugin_offer`.
@@ -22,6 +27,7 @@
 pub mod check;
 pub mod clients;
 pub mod config;
+pub mod enforce;
 
 use crate::commands::Args;
 use crate::rules::cvars;
@@ -43,6 +49,9 @@ pub const CVAR_REQUIRED_KICK: &std::ffi::CStr = c"sv_plugin_required_kick";
 /// `sv_plugin_check_time` (port addition): seconds a client has to answer before the server acts
 /// (here: the op 5 kick).
 pub const CVAR_CHECK_TIME: &std::ffi::CStr = c"sv_plugin_check_time";
+/// `sv_plugin_download_time` (port addition): seconds after the offers went out before a
+/// required offer that isn't loaded at a version its `match` accepts kicks (§13.3).
+pub const CVAR_DOWNLOAD_TIME: &std::ffi::CStr = c"sv_plugin_download_time";
 /// `ts_dev_tspkg` (port dev aid, needs `sv_cheats 1`): every port client with a readable
 /// version counts as hooking `TSPkg`, so builds between releases (still reporting the last
 /// release's version, below `TSPKG_SINCE`) can be tested.
@@ -311,10 +320,72 @@ fn send_put_in_server(e: *mut edict_t) {
         if !hooks {
             return;
         }
+        s.clients[i].enforce.ready_at = Some(now);
         for k in 0..s.ready.len() {
             send_offer(s, e, k);
         }
     });
+}
+
+/// [`enforce::step`] for every client the offers went to, at `now`.
+fn enforce_all(now: f32) {
+    let times = enforce::Times { check: cvars::f(CVAR_CHECK_TIME).max(0.0), download: cvars::f(CVAR_DOWNLOAD_TIME).max(0.0) };
+    let required_kick = cvars::on(CVAR_REQUIRED_KICK);
+    let busy = with(|s| s.clients.iter().any(|c| c.enforce.ready_at.is_some() && !c.enforce.kicked));
+    if !busy {
+        return;
+    }
+    let mut kicks = Vec::new();
+    with(|s| {
+        let named: std::collections::BTreeMap<String, enforce::Named> = s
+            .ready
+            .iter()
+            .map(|r| (r.offer.id.clone(), enforce::Named { name: r.checked.name.clone(), homepage: r.checked.homepage.clone() }))
+            .collect();
+        for i in 0..s.clients.len() {
+            if s.clients[i].enforce.ready_at.is_none() || s.clients[i].enforce.kicked {
+                continue;
+            }
+            let file = std::mem::take(&mut s.file);
+            let acts = enforce::step(&mut s.clients[i], now, &file, &named, times, required_kick);
+            s.file = file;
+            if acts.is_empty() {
+                continue;
+            }
+            let e = engine().player(i as i32);
+            if e.is_null() {
+                continue;
+            }
+            let who = name_of(e);
+            for a in acts {
+                match a {
+                    enforce::Act::Log(line) => log(&format!("{who}: {line}")),
+                    enforce::Act::Send(m) => {
+                        if send(s, e, &m) {
+                            log(&format!("{} to {who}", describe(&m)));
+                        }
+                    }
+                    enforce::Act::Kick(reason) => kicks.push((e, reason)),
+                }
+            }
+        }
+    });
+    for (e, reason) in kicks {
+        kick(e, &reason);
+    }
+}
+
+/// An op 3 or 4 for the log.
+fn describe(m: &tspkg::Message) -> String {
+    match m {
+        tspkg::Message::Require { id, requirement, flags } => {
+            format!("require {id} {requirement}{}", if flags & tspkg::FLAG_REQUIRED != 0 { " (required)" } else { "" })
+        }
+        tspkg::Message::Block { id, requirement, action, .. } => {
+            format!("block {id} {requirement} ({})", if *action == tspkg::BlockAction::Kick { "kick" } else { "suspend" })
+        }
+        other => format!("op {}", other.op()),
+    }
 }
 
 /// `kick #<userid> "<reason>"`, with the reason cleaned for the console and cut to fit.
@@ -325,9 +396,10 @@ fn kick(e: *mut edict_t, reason: &str) {
     eng.server_command(&format!("kick #{} \"{reason}\"\n", eng.user_id(e)));
 }
 
-/// Kicks clients whose op 5 notice ran out (`StartFrame`).
+/// Kicks clients whose op 5 notice ran out, and enforces the plugin rules (`StartFrame`).
 pub fn start_frame() {
     let now = engine().time();
+    enforce_all(now);
     let due: Vec<(usize, String)> = with(|s| {
         s.clients
             .iter_mut()
@@ -360,7 +432,8 @@ pub fn client_command(e: *mut edict_t, args: &Args) -> bool {
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let now = engine().time();
     let required_kick = cvars::on(CVAR_REQUIRED_KICK);
-    let Some(outcome) = client(e, |c| c.command(now, &argv, required_kick)) else { return true };
+    let hooks = hooks_tspkg(e);
+    let Some(outcome) = client(e, |c| c.command(now, &argv, required_kick, hooks)) else { return true };
     let who = name_of(e);
     match outcome {
         Outcome::Ignored(Some(why)) => log(&format!("{who}: {why}")),

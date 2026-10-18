@@ -70,6 +70,8 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     // Port additions: client plugin offers (`plugin_offers`, issue #298).
     ("sv_plugin_required_kick", "0", 0),
     ("sv_plugin_check_time", "15", 0),
+    // Port addition: the required-offer kick's wait for downloads (`plugin_offers::enforce`, #302).
+    ("sv_plugin_download_time", "300", 0),
     // Port dev aid (sv_cheats 1): every port client counts as hooking TSPkg.
     ("ts_dev_tspkg", "0", 0),
 ];

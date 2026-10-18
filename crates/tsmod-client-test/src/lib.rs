@@ -22,7 +22,9 @@
 //!
 //! Under any name starting with `quiet` it is a minimal extension for the approval tests (issue
 //! #297): it loads, prints `quiet stub init` from `init`, and, installed as a package with a
-//! helper, starts that helper through `verified_spawn`.
+//! helper, starts that helper through `verified_spawn`. For a server's block (#302) it prints
+//! `quiet stub suspended: <reason>` and `quiet stub resumed after <n> callbacks while suspended`
+//! (its `frame` and `redraw` count any that come; none may).
 
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -241,7 +243,16 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
                 s.id = info.id;
                 s.path = path;
             });
-            *out = ClientExt { name: c"quiet client stub".as_ptr(), version: c"1".as_ptr(), init: Some(quiet_init), ..ClientExt::EMPTY };
+            *out = ClientExt {
+                name: c"quiet client stub".as_ptr(),
+                version: c"1".as_ptr(),
+                init: Some(quiet_init),
+                frame: Some(quiet_frame),
+                redraw: Some(quiet_redraw),
+                suspend: Some(quiet_suspend),
+                resume: Some(quiet_resume),
+                ..ClientExt::EMPTY
+            };
             return OK;
         }
         other => {
@@ -303,6 +314,38 @@ extern "C" fn quiet_init() {
         ((a.verified_spawn)(id(), outside.as_ptr(), 0, std::ptr::null()), (a.verified_spawn)(id(), helper.as_ptr(), 1, argv.as_ptr()))
     };
     print(&format!("quiet spawn refused {} started {}", refused == REFUSED, started > 0));
+}
+
+/// A quiet stub's `frame` and `redraw`: only counted, if they come while it's suspended.
+extern "C" fn quiet_frame(_time: f64) {
+    quiet();
+}
+
+extern "C" fn quiet_redraw(_time: f32, _intermission: c_int) {
+    quiet();
+}
+
+/// A quiet stub's `suspend`: says so with the reason (a server's block, `cargo xtask tspkg`).
+unsafe extern "C" fn quiet_suspend(reason: *const c_char) {
+    let why = if reason.is_null() {
+        String::new()
+    } else {
+        // SAFETY: a NUL-terminated string valid for the call (checked non-NULL).
+        unsafe { CStr::from_ptr(reason) }.to_string_lossy().into_owned()
+    };
+    with(|s| {
+        s.suspended = true;
+        s.while_suspended = 0;
+    });
+    print(&format!("quiet stub suspended: {why}"));
+}
+
+extern "C" fn quiet_resume() {
+    let n = with(|s| {
+        s.suspended = false;
+        s.while_suspended
+    });
+    print(&format!("quiet stub resumed after {n} callbacks while suspended"));
 }
 
 /// Counts a callback that came while suspended.

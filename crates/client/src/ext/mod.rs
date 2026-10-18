@@ -109,6 +109,8 @@ struct Entry {
     /// `None` while its load function runs.
     hooks: Option<Rc<dyn ExtHooks>>,
     suspended: bool,
+    /// Why it is suspended (`cl_plugins_list`, client-plugins.md §13.4).
+    reason: String,
 }
 
 struct Command {
@@ -269,8 +271,15 @@ pub fn load_one(c: &Candidate, open: Open) -> bool {
     let id = with(|s| {
         let id = s.next_id;
         s.next_id += 1;
-        let entry =
-            Entry { id, name: c.name.clone(), library: c.library.clone(), approved: approved.clone(), hooks: None, suspended: false };
+        let entry = Entry {
+            id,
+            name: c.name.clone(),
+            library: c.library.clone(),
+            approved: approved.clone(),
+            hooks: None,
+            suspended: false,
+            reason: String::new(),
+        };
         s.exts.push(entry);
         id
     });
@@ -489,6 +498,7 @@ pub fn suspend(name: &str, reason: &str) -> bool {
     let hooks = with(|s| {
         let e = s.exts.iter_mut().find(|e| e.name == name && !e.suspended && e.hooks.is_some())?;
         e.suspended = true;
+        e.reason = reason.to_owned();
         Some((e.id, e.hooks.clone()?))
     });
     let Some((id, h)) = hooks else { return false };
@@ -503,6 +513,7 @@ pub fn resume(name: &str) -> bool {
     let hooks = with(|s| {
         let e = s.exts.iter_mut().find(|e| e.name == name && e.suspended)?;
         e.suspended = false;
+        e.reason.clear();
         e.hooks.clone()
     });
     let Some(h) = hooks else { return false };
@@ -510,10 +521,17 @@ pub fn resume(name: &str) -> bool {
     true
 }
 
+/// The suspended extensions and why, by name.
+pub fn suspended() -> Vec<(String, String)> {
+    with(|s| s.exts.iter().filter(|e| e.suspended).map(|e| (e.name.clone(), e.reason.clone())).collect())
+}
+
 fn resume_all() {
     let names: Vec<String> = with(|s| s.exts.iter().filter(|e| e.suspended).map(|e| e.name.clone()).collect());
     for n in names {
-        resume(&n);
+        if resume(&n) {
+            say(&format!("{n} resumed (a suspension lasts while on the server that asked for it)"));
+        }
     }
 }
 

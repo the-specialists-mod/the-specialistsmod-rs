@@ -70,6 +70,8 @@ pub struct Client {
     pub put_pending: bool,
     pub rate: RateLimit,
     rate_logged: bool,
+    /// `match`, `[[block]]` and `unlisted` (`super::enforce`).
+    pub enforce: super::enforce::Enforcement,
 }
 
 /// What a `tspkg` command did.
@@ -85,8 +87,9 @@ pub enum Outcome {
 }
 
 impl Client {
-    /// Handles a `tspkg` command's arguments (after `tspkg`).
-    pub fn command(&mut self, now: f32, args: &[&str], required_kick: bool) -> Outcome {
+    /// Handles a `tspkg` command's arguments (after `tspkg`). `hooks`: the client hooks `TSPkg`
+    /// (`plugin_offers::hooks_tspkg`), the only clients whose plugin list counts.
+    pub fn command(&mut self, now: f32, args: &[&str], required_kick: bool, hooks: bool) -> Outcome {
         if !self.rate.allow(now) {
             if std::mem::replace(&mut self.rate_logged, true) {
                 return Outcome::Ignored(None);
@@ -100,8 +103,11 @@ impl Client {
         };
         match reply {
             Reply::List(items) => {
-                if self.sent.is_empty() && self.notice.is_none() {
-                    return Outcome::Ignored(Some("tspkg list before any TSPkg".into()));
+                // A client that hooks `TSPkg` may list its plugins before any `TSPkg` (it does when
+                // the server's version says it understands `tspkg`, §13.2), so a server with
+                // only blocks or a policy, and nothing to offer, still learns them.
+                if !hooks && self.sent.is_empty() && self.notice.is_none() {
+                    return Outcome::Ignored(Some("tspkg list from a client that doesn't hook TSPkg".into()));
                 }
                 let complete = items.is_empty();
                 for item in items {
@@ -116,8 +122,12 @@ impl Client {
                 let required = match self.sent.get(&id) {
                     Some(s) => s.required,
                     None if id == PORT_ID && self.notice.is_some() => false,
+                    None if self.enforce.targets.contains_key(&id) => false,
                     None => return Outcome::Ignored(Some(format!("tspkg for {id}, which the server didn't offer"))),
                 };
+                if state == State::Suspended && self.enforce.awaiting.get(&id).is_some_and(|(v, _)| *v == version) {
+                    self.enforce.awaiting.remove(&id);
+                }
                 self.answers.insert(id.clone(), (version.clone(), state, reason.clone()));
                 let kick = required && required_kick && state.refuses();
                 Outcome::Answer { id, version, state, reason, kick }
@@ -152,26 +162,28 @@ mod tests {
     fn answers_to_offers() {
         let mut c = offered(false);
         assert_eq!(
-            c.command(1.0, &args("webview 0.1.0 offered"), true),
+            c.command(1.0, &args("webview 0.1.0 offered"), true, false),
             Outcome::Answer { id: "webview".into(), version: "0.1.0".into(), state: State::Offered, reason: "".into(), kick: false }
         );
         assert_eq!(c.answers["webview"].1, State::Offered);
-        let Outcome::Answer { kick, .. } = c.command(2.0, &args("webview 0.1.0 denied"), true) else { panic!() };
+        let Outcome::Answer { kick, .. } = c.command(2.0, &args("webview 0.1.0 denied"), true, false) else { panic!() };
         assert!(!kick, "not required");
-        assert!(matches!(c.command(3.0, &args("other 1.0.0 loaded"), true), Outcome::Ignored(Some(_))), "not offered");
-        assert!(matches!(c.command(3.0, &args("webview 0.1.0 approved"), true), Outcome::Ignored(Some(_))), "bad state");
-        assert!(matches!(c.command(3.0, &args("tsrs 3.0.8 restart"), true), Outcome::Ignored(Some(_))), "no op 5 sent");
+        assert!(matches!(c.command(3.0, &args("other 1.0.0 loaded"), true, false), Outcome::Ignored(Some(_))), "not offered");
+        assert!(matches!(c.command(3.0, &args("webview 0.1.0 approved"), true, false), Outcome::Ignored(Some(_))), "bad state");
+        assert!(matches!(c.command(3.0, &args("tsrs 3.0.8 restart"), true, true), Outcome::Ignored(Some(_))), "no op 5 sent");
         c.notice = Some(PortNotice { requirement: "=3.0.9".into(), url: "x".into(), reason: "r".into(), kick_at: None });
-        assert!(matches!(c.command(3.0, &args("tsrs 3.0.8 restart"), true), Outcome::Answer { kick: false, .. }));
+        assert!(matches!(c.command(3.0, &args("tsrs 3.0.8 restart"), true, true), Outcome::Answer { kick: false, .. }));
     }
 
     #[test]
     fn required_offers_kick_on_refusal() {
         for st in State::ALL {
             let mut c = offered(true);
-            let Outcome::Answer { kick, .. } = c.command(1.0, &args(&format!("webview 0.1.0 {st} why")), true) else { panic!() };
+            let Outcome::Answer { kick, .. } = c.command(1.0, &args(&format!("webview 0.1.0 {st} why")), true, false) else { panic!() };
             assert_eq!(kick, matches!(st, State::Denied | State::Unsupported | State::Failed), "{st}");
-            let Outcome::Answer { kick, .. } = offered(true).command(1.0, &args(&format!("webview 0.1.0 {st}")), false) else { panic!() };
+            let Outcome::Answer { kick, .. } = offered(true).command(1.0, &args(&format!("webview 0.1.0 {st}")), false, false) else {
+                panic!()
+            };
             assert!(!kick, "sv_plugin_required_kick 0");
         }
         assert_eq!(
@@ -181,14 +193,27 @@ mod tests {
     }
 
     #[test]
+    fn answers_to_blocks_and_requires() {
+        let mut c = offered(false);
+        assert!(matches!(c.command(1.0, &args("manual:dev 0.0.0 suspended"), false, true), Outcome::Ignored(Some(_))), "no op 4 sent");
+        c.enforce.targets.insert("manual:dev".into(), "0.0.0".into());
+        c.enforce.awaiting.insert("manual:dev".into(), ("0.0.0".into(), 30.0));
+        assert!(matches!(c.command(1.0, &args("manual:dev 0.1.0 suspended"), false, true), Outcome::Answer { kick: false, .. }));
+        assert!(c.enforce.awaiting.contains_key("manual:dev"), "another version");
+        assert!(matches!(c.command(1.0, &args("manual:dev 0.0.0 suspended x"), true, true), Outcome::Answer { kick: false, .. }));
+        assert!(c.enforce.awaiting.is_empty());
+    }
+
+    #[test]
     fn plugin_lists() {
         let mut c = Client::default();
-        assert!(matches!(c.command(1.0, &args("list a@1.0.0"), false), Outcome::Ignored(Some(_))), "before any TSPkg");
+        assert!(matches!(c.command(1.0, &args("list a@1.0.0"), false, false), Outcome::Ignored(Some(_))), "before any TSPkg");
+        assert_eq!(c.command(1.0, &args("list a@1.0.0"), false, true), Outcome::List { complete: false }, "from a client that hooks it");
         let mut c = offered(false);
-        assert_eq!(c.command(1.0, &args("list a@1.0.0 manual:x@0.0.0"), false), Outcome::List { complete: false });
-        assert_eq!(c.command(1.0, &args("list a@1.0.0 b@2.0.0"), false), Outcome::List { complete: false });
+        assert_eq!(c.command(1.0, &args("list a@1.0.0 manual:x@0.0.0"), false, false), Outcome::List { complete: false });
+        assert_eq!(c.command(1.0, &args("list a@1.0.0 b@2.0.0"), false, false), Outcome::List { complete: false });
         assert!(!c.plugins_complete);
-        assert_eq!(c.command(1.0, &args("list"), false), Outcome::List { complete: true });
+        assert_eq!(c.command(1.0, &args("list"), false, false), Outcome::List { complete: true });
         assert!(c.plugins_complete);
         assert_eq!(c.plugins.len(), 3);
     }
@@ -197,18 +222,18 @@ mod tests {
     fn rate_limit() {
         let mut c = offered(false);
         for i in 0..RATE_LIMIT {
-            assert!(matches!(c.command(i as f32 * 0.1, &args("webview 0.1.0 offered"), false), Outcome::Answer { .. }));
+            assert!(matches!(c.command(i as f32 * 0.1, &args("webview 0.1.0 offered"), false, false), Outcome::Answer { .. }));
         }
-        assert!(matches!(c.command(2.0, &args("webview 0.1.0 offered"), false), Outcome::Ignored(Some(_))), "logged once");
-        assert_eq!(c.command(2.1, &args("webview 0.1.0 offered"), false), Outcome::Ignored(None));
+        assert!(matches!(c.command(2.0, &args("webview 0.1.0 offered"), false, false), Outcome::Ignored(Some(_))), "logged once");
+        assert_eq!(c.command(2.1, &args("webview 0.1.0 offered"), false, false), Outcome::Ignored(None));
         // The window slides: the first command is 10 s old at 10.0.
-        assert!(matches!(c.command(10.0, &args("webview 0.1.0 offered"), false), Outcome::Answer { .. }));
+        assert!(matches!(c.command(10.0, &args("webview 0.1.0 offered"), false, false), Outcome::Answer { .. }));
         assert_eq!(
-            c.command(10.0, &args("webview 0.1.0 offered"), false),
+            c.command(10.0, &args("webview 0.1.0 offered"), false, false),
             Outcome::Ignored(Some(format!("over {RATE_LIMIT} tspkg commands in {RATE_WINDOW} s; ignoring the rest")))
         );
         // A new map's clock starts again.
-        assert!(matches!(c.command(1.0, &args("webview 0.1.0 offered"), false), Outcome::Answer { .. }));
+        assert!(matches!(c.command(1.0, &args("webview 0.1.0 offered"), false, false), Outcome::Answer { .. }));
         let mut r = RateLimit::default();
         assert!((0..RATE_LIMIT).all(|_| r.allow(5.0)) && !r.allow(5.0) && r.allow(15.0));
     }

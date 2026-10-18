@@ -275,9 +275,31 @@ pub fn init() {
     offers::init();
 }
 
-/// `cl_plugins_list`: every plugin found at start, its approval and whether it loaded.
+/// Every loaded plugin with the version its approval was verified at (`0.0.0` for a
+/// hand-installed library), as `tspkg list` reports them (§13.2), and its extension's name.
+pub fn loaded_plugins() -> Vec<offers::enforce::LoadedPlugin> {
+    let loaded = crate::ext::loaded();
+    with(|s| {
+        s.items
+            .iter()
+            .filter(|it| loaded.contains(&it.name))
+            .map(|it| {
+                let version = match &it.decision {
+                    Decision::Allowed { v, .. } => v.version.as_ref().map_or_else(|| "0.0.0".into(), ToString::to_string),
+                    Decision::Skip(_) => "0.0.0".into(),
+                };
+                offers::enforce::LoadedPlugin { id: it.candidate.id(), version, ext: it.name.clone() }
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// `cl_plugins_list`: every plugin found at start, its approval and whether it loaded (and, on
+/// this server, whether it is suspended and why, §13.4).
 pub fn list_lines() -> Vec<String> {
     let loaded = crate::ext::loaded();
+    let suspended = crate::ext::suspended();
     with(|s| {
         let mut out = vec![format!("{} plugin(s) found at start{}", s.items.len(), if s.opts.enabled { "" } else { " (cl_plugins 0)" })];
         for it in &s.items {
@@ -289,7 +311,9 @@ pub fn list_lines() -> Vec<String> {
             }
             .unwrap_or_else(|| "?".into());
             let state = entry.map_or_else(|| "not approved".to_string(), entry_text);
-            let status = if loaded.contains(&it.name) {
+            let status = if let Some((_, why)) = suspended.iter().find(|(n, _)| *n == it.name) {
+                format!("loaded, suspended by this server ({why})")
+            } else if loaded.contains(&it.name) {
                 "loaded".to_string()
             } else {
                 match &it.decision {

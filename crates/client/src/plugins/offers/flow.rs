@@ -235,7 +235,7 @@ pub struct Connection {
     pub offered: Vec<String>,
     /// Ids the player refused this connection: not shown again.
     pub refused: BTreeSet<String>,
-    /// `tspkg list` was sent (after the first `TSPkg`, §13.2).
+    /// `tspkg list` was sent this map (after the first `TSPkg`, or the server's version, §13.2).
     pub listed: bool,
 }
 

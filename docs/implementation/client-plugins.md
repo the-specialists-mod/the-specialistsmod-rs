@@ -11,7 +11,10 @@ libraries, `[requires] port`, `scope = "server"` loading, the `cl_plugins*` cvar
 port client's version check (§13.1, issue #300); the port side of restart and reconnect (§13.5,
 issue #301; the launcher side is tsmod-launcher #4 and #5); and the client's offer flow (§6.3,
 §6.4, §7.2, §7.3, §9, op 5's card; `crates/client/src/plugins/offers/`, issue #299; §17 lists what
-that build decided). `cl_plugins_menu` (#311) and enforcement (§13.3, #302) aren't built yet.
+that build decided); and enforcement (§13.2–§13.4: `match`, `[[block]]`, `[policy] unlisted`, ops 3
+and 4, suspend and resume, the grace periods; `ts_server::plugin_offers::enforce` and
+`ts_client::plugins::offers::enforce`, issue #302; §18 lists what that build decided).
+`cl_plugins_menu` (#311) isn't built yet.
 
 The server loads `tsmod_*` libraries from `dlls/` ([plugin-api.md](plugin-api.md) §1.2); this
 document gives the client the same, with the player's approval. It adds two things:
@@ -375,7 +378,8 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
 | cvar / command (server, port additions) | default | meaning |
 |---|---|---|
 | `sv_plugin_required_kick` | 0 | 1 kicks a player who refuses a required offer |
-| `sv_plugin_check_time` | 15 | seconds before the op 5 kick (§13.1); #302 uses it for its grace period |
+| `sv_plugin_check_time` | 15 | seconds before the op 5 kick (§13.1); the grace period before `match`, `[[block]]` and `unlisted` apply, and the time a client has to answer a suspend (§13.3) |
+| `sv_plugin_download_time` | 300 | seconds after the offers go out before a required offer that isn't loaded at a version its `match` accepts kicks, with `sv_plugin_required_kick 1` (§13.3) |
 | `ts_dev_tspkg` | 0 | dev aid, with `sv_cheats 1`: every port client counts as hooking `TSPkg` (§12) |
 | `sv_plugin_offer <#userid\|name\|all> <id>` | | offers `id` now |
 | `sv_plugin_withdraw <#userid\|name\|all> <id>` | | op 2 for an offer sent earlier |
@@ -635,7 +639,7 @@ time out (#319). One card at a time; the rest queue.
   second word is refused with the usage line, so a password typed as an argument is never used.
 * `ts_dev_restart [restart | port <requirement> [<url>] | plugin <id@version>]` (dev aid):
   requests a restart and reconnect to the current server for that reason (§13.5), as op 5's
-  card and an update of a loaded plugin do (#299; #302's enforcement will too).
+  card, an update of a loaded plugin and op 3 for an installed version do (#299, #302).
 
 None of these can approve. A server that stuffs `cl_plugins 0` or `cl_plugins_menu` can, at
 worst, disable plugins for the next start or open the panel. Both are harmless and visible. A
@@ -749,6 +753,13 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
      * With a `[[block]]` on the stub plugin's version, `suspend` must stop its callbacks (it
        logs every call) and `kick` must drop the client with the reason.
      * A `match = "exact"` offer for a newer stub version must answer `restart`.
+     * **Built (#302) in `cargo xtask tspkg`**, scenarios 7–10 (validation.md §2.z2): a block
+       with `suspend` (the quiet stub prints its `suspend` and `resume` and counts callbacks in
+       between: none), resumed on `disconnect`; a block with `kick`; a required `match =
+       "exact"` offer of a newer version (update card, `restart`, one restart card, op 3, the
+       kick at `sv_plugin_download_time`); `unlisted = "suspend"`. Scenario 3 adds `unlisted =
+       "kick"` and a `manual:*` kick block: the older port client and TS 3.0's client still
+       join.
      * Restart and reconnect, with a fake launcher that records requests (`cargo xtask relaunch`,
        validation.md §2.r, with `crates/fake-launcher`'s `ts-launcher-fake`; the restart comes
        from `ts_dev_restart` until op 5 exists):
@@ -910,14 +921,20 @@ unlisted = "allow"        # allow (default) | suspend | kick: plugins in neither
   `match`, an offer is `compatible`.
 * The server parses and keeps `match`, `[[block]]` (`id` a plugin id, `manual:<name>` or
   `manual:*`; `versions` a semver requirement up to 96 bytes; `reason` up to 64 bytes) and
-  `[policy]`, and records each client's `tspkg list` (#298, `plugin_offers::config`); enforcing
-  them (§13.3) is #302.
+  `[policy]`, and records each client's `tspkg list` (#298, `plugin_offers::config`), and
+  enforces them (§13.3, #302, `plugin_offers::enforce`).
 * **What the client reports:** after the first `TSPkg` from the server, the client sends
   `tspkg list` naming every loaded plugin and version, chunked like other commands under 128
   bytes. A client that sends nothing within `sv_plugin_check_time` (default 15 s) is treated as
-  having no plugins.
+  having no plugins. Built (#302): the client also sends it as soon as the server's version
+  (`SrvSett` 5–7) is one that understands `tspkg` (`port::TSPKG_SINCE` on), so a server with
+  blocks or a policy but nothing to offer learns it too; the server accepts a list from any
+  client that hooks `TSPkg`. It goes again at every map (the map change's reconnect makes the
+  server forget it). A list still incomplete at the end of the grace period counts as what came.
+  The version is the one the plugin's approval was verified at; a version that isn't semver
+  counts as `0.0.0` on the server, so a client can't dodge a `<x` block with a token.
 * **Hand-installed libraries** report as `manual:<name>@0.0.0`. Only `unlisted` and an explicit
-  `[[block]] id = "manual:*"` apply to them.
+  `[[block]] id = "manual:*"` (or `manual:<name>`) apply to them.
 
 ### 13.3 Enforcement
 
@@ -961,6 +978,50 @@ op 5 port_version   id ("tsrs"), version requirement (≤ 96), string url (≤ 2
   `client_plugin_version(edict, id)`.
 * **Logs:** the server logs each refusal, suspension and kick with the player, the plugin, the
   version and the rule that matched.
+* **Built (#302).** Server: `ts_server::plugin_offers::enforce` (engine-free, unit-tested),
+  stepped every `StartFrame` for each client the offers went to:
+  * **Who:** only clients that hook `TSPkg` (§12). TS 3.0's client and port clients before
+    `TSPKG_SINCE` can't be told and can't run client plugins, so nothing here applies to them,
+    whatever the policy; `sv_client_require_port` (§13.1) is what keeps them out. Bots and HLTV
+    are never checked.
+  * **Grace:** it starts when the offers go out (the first `PlayerPostThink`, §6.1) and ends at
+    `sv_plugin_check_time`, or earlier once the list is complete and every offer has an answer
+    other than `offered` or `downloading`.
+  * **Judging** each listed plugin, once: the first `[[block]]` (file order) whose id and
+    `versions` match wins, even over an offer of the same id; else an offer of the id accepts its
+    version through `match`, or sends op 3 (`=v` for `exact`, `^v` for `compatible`, `*`, or the
+    requirement) with the `required` flag when the offer has it; else `unlisted`. Op 3 for an
+    offer that isn't required only tells the client; nothing is enforced. An unlisted plugin gets
+    op 4 with the requirement `*` and the reason "not allowed on this server". Op 4 names the
+    plugin as listed (`manual:dev`, not the block's `manual:*`).
+  * **Suspend** waits `sv_plugin_check_time` for `tspkg <id> <version> suspended`, then kicks
+    ("..., and it wasn't suspended."). **Kick** sends op 4 and kicks at once: "This server blocks
+    the client plugin <id> <version>: <reason>". Block kicks don't need
+    `sv_plugin_required_kick`; the block is the admin's explicit choice.
+  * **Required offers** kick at `sv_plugin_download_time` after the offers went out, with
+    `sv_plugin_required_kick 1`, unless the plugin is loaded at a version `match` accepts (an
+    answer `loaded`, else the list's version, else `have`). A refusal still kicks at once (§6.1).
+    So a player who restarts for an update has the download time to come back, and one who
+    chooses "Later" on the restart card is kicked then.
+  * **Logs:** `[ts] tspkg: <player>: <id> <version>: <rule>: suspend|kick|require <req>`, the op
+    sent (`block webview <0.2.0 (suspend) to <player>`), the answer, and `kicking <player>: ...`.
+  * The plugin API's `client_plugin_list` and `client_plugin_version` wait for the API version
+    after 8, with `offer_client_plugin` and `client_plugin_state` (#321).
+
+  Client: `ts_client::plugins::offers::enforce` decides, `offers` acts:
+  * **Op 4 `suspend`:** every loaded plugin the block names (id, `manual:<name>` or `manual:*`,
+    at a version the requirement accepts) is suspended through `ext::suspend` with the block's
+    reason (or "blocked by this server") and answered `suspended`, again if it already was (after
+    a map change). A block naming nothing loaded is printed only. Leaving the server (a new
+    address or a disconnect) resumes it (`ext`'s server change), with a console line.
+  * **Op 4 `kick`:** printed ("this server doesn't allow <id> <version> and disconnects players
+    who use it"); the server's kick follows.
+  * **Op 3:** nothing when the loaded version fits or the plugin isn't loaded, or while an offer
+    of it is being handled (its update card leads to `restart` and the restart card, §9). When it
+    doesn't fit and an approved version that does is installed for this server (the player chose
+    "Later" on a restart card before), the client answers `tspkg <id> <version> restart "needs
+    <req>"` and shows the restart card ("Restart now" calls `relaunch::restart(Plugin)`), once
+    per connection and plugin. Otherwise it prints that the server's offer updates it.
 
 ### 13.4 Client cvars
 
@@ -969,6 +1030,7 @@ op 5 port_version   id ("tsrs"), version requirement (≤ 96), string url (≤ 2
 | `cl_version_strict` | 0 | 1 disconnects from servers whose port version differs from the client's (`FCVAR_ARCHIVE`; §13.1) |
 
 `cl_plugins_list` shows, for the current server, which loaded plugins are suspended and why.
+Built (#302): "loaded, suspended by this server (<reason>)". `cl_version_strict` is #300's.
 
 ### 13.5 Restart, reconnect and updates
 
@@ -986,7 +1048,7 @@ first. Without a launcher, the card says where to get the version and offers to 
 
 The port side is `ts_client::relaunch` (issue #301): `relaunch::restart(reason)` is the entry
 point for op 5 and plugin restarts: op 5's card and an update of a loaded plugin call it (#299),
-as the dev aid `ts_dev_restart` (§8) does, and #302's enforcement will. It reads the server's
+as the dev aid `ts_dev_restart` (§8) and op 3's restart card (#302) do. It reads the server's
 address from the engine's net API (`Status`,
 `AdrToString`; a listen server's `loopback` can't be restarted into) and its name from the HUD's
 `ServerName`.
@@ -1278,7 +1340,8 @@ open question 3.
      arguments, `tsrs_reconnect` and its password card, self-relaunch where its tests pass, the
      quit-and-inform card and `.reconnect`, and the relaunch e2e (§11 e2e 6) on every root.
    * plugins: `match`, `[[block]]` and `[policy]`, `tspkg list`, ops 3 and 4, suspend and
-     resume, restart and reconnect, and the plugin API events.
+     resume, restart and reconnect, and the plugin API events. Built (#302), but for the plugin
+     API events (#321).
 
 ## 16. Decisions made building milestone 2 (#297)
 
@@ -1318,3 +1381,31 @@ Where this specification was silent or contradicted itself, the offer flow
   (§11).
 * **Offers reach FWGS clients** only once spawned, so the server sends them at the first
   `PlayerPostThink` (§6.1, #317).
+
+## 18. Decisions made building enforcement (#302)
+
+Where §13.2 and §13.3 were silent, the enforcement (`ts_server::plugin_offers::enforce`,
+`ts_client::plugins::offers::enforce`) chose, and the sections above now say so (issue #322):
+
+* **The list without a `TSPkg`:** the client also sends `tspkg list` once the server's version
+  says it understands `tspkg`, and the server takes a list from any client that hooks `TSPkg`;
+  otherwise a server with blocks or a policy but no offers would never learn it (§13.2).
+* **Again at every map:** the server's per-client state starts again at the map change's
+  reconnect, so the client sends the list at each map, not once per address (#323) (§13.2).
+* **Who is checked:** only clients that hook `TSPkg`. TS 3.0's client and older port clients
+  can't run client plugins or be told, so no policy reaches them; `sv_client_require_port` does
+  (§13.3).
+* **Precedence:** the first matching `[[block]]` wins, over an offer of the same id too; then the
+  offer's `match`; then `unlisted` (§13.3).
+* **Grace:** "answered every offer" means an answer other than `offered` or `downloading`, with
+  the list complete; a list incomplete at the end counts as what came (§13.3).
+* **Kicks:** block kicks are immediate and need no cvar; required-offer kicks need
+  `sv_plugin_required_kick 1` and wait for `sv_plugin_download_time` from the offers going out;
+  a suspend not answered within `sv_plugin_check_time` kicks (§13.3).
+* **Non-required mismatches** get op 3 without the `required` flag, and nothing more (§13.3).
+* **Op 4's id** is the plugin as listed; op 4 for an unlisted plugin carries `*` and "not allowed
+  on this server" (§13.3).
+* **Versions** that aren't semver count as `0.0.0` on the server (§13.2).
+* **Op 3 with an installed version** answers `restart` and shows the restart card, once per
+  connection; while an offer of the plugin is being handled, its own card does that (§13.3).
+* **e2e 5's blocks and `match`** run in `cargo xtask tspkg`, scenarios 7–10 (§11).

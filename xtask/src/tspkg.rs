@@ -18,11 +18,15 @@
 //!      by `TSPkg`, and kicked after `sv_plugin_check_time 3` with the `[tsrs:...]` tag.
 //!   3. Without `ts_dev_tspkg`, the same offers reach no client (this build is below
 //!      `TSPKG_SINCE`, as an older port client would be); and on the Steam engines the original
-//!      TS 3.0 client (`TS_ORIG_CLIENT`, as `xtask version`) gets no `TSPkg` and joins.
+//!      TS 3.0 client (`TS_ORIG_CLIENT`, as `xtask version`) gets no `TSPkg` and joins. Both run
+//!      with `unlisted = "kick"` and a `manual:*` kick block, and neither is kicked (#302).
 //!   4. to 6. The client's side (issue #299): offers, downloads over a FastDL stand-in, the
 //!      cards, tampered packages, an update and op 5's card through the fake launcher
 //!      ([`crate::tspkg_client`]). The client is the e2e build (`--features e2e`) for the whole
 //!      run; the normal one is put back afterwards.
+//!   7. to 10. Enforcement (issue #302): a `[[block]]` that suspends (resumed on leaving) and
+//!      one that kicks, a required `match` with op 3 and the `sv_plugin_download_time` kick, and
+//!      `unlisted = "suspend"` ([`crate::tspkg_client`]).
 
 use crate::roots::{Engine, Os, Root};
 use crate::tspkg_client::FastDl;
@@ -236,6 +240,13 @@ impl Ctx {
             checks.push(("2: the server answered".into(), false));
         }
 
+        // From here the policy kicks every plugin it can: a client that doesn't hook `TSPkg` must
+        // still join (#302: nothing is enforced on clients that can't be told).
+        fs::write(
+            gamedir.join("plugin_offers.toml"),
+            format!("{offers}\n[policy]\nunlisted = \"kick\"\n\n[[block]]\nid = \"manual:*\"\nversions = \"*\"\naction = \"kick\"\n"),
+        )
+        .unwrap();
         say!("== {}: no TSPkg to clients that don't hook it (port {})", root.name, port + 2);
         if let Some(server) = self.version_server(root, port + 2, &format!("sv_downloadurl \"{DOWNLOAD_URL}\"")) {
             let client = self.fwgs_client_script(root, fwgs, port + 2, "tspkg-old", "");
@@ -246,6 +257,7 @@ impl Ctx {
                 !log.contains(&format!("offered {STUB}")) && !client.contains("[ts] tspkg:"),
             ));
             checks.push(("3: it joins".into(), client.contains("client connected") || log.contains("entered the game")));
+            checks.push(("3: unlisted = kick and a manual:* block leave it alone".into(), !log.contains("kicking")));
         } else {
             checks.push(("3: the server answered".into(), false));
         }
@@ -257,6 +269,7 @@ impl Ctx {
                 checks.push(("3: the original client gets no offer".into(), !log.contains(&format!("offered {STUB}"))));
                 checks.push(("3: the original client reports no unknown message".into(), !client.contains("UserMsg")));
                 checks.push(("3: the original client joins".into(), log.contains("entered the game")));
+                checks.push(("3: the policy doesn't kick the original client".into(), !log.contains("kicking")));
             } else {
                 checks.push(("3: the server answered (original client)".into(), false));
             }

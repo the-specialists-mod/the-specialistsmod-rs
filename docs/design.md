@@ -112,7 +112,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `ClientPutInServer` | creates the `Player` entity and spawns it; marks op 5 and the client plugin offers due (`plugin_offers`, sent at the first `PostThink`: FWGS drops user messages to clients not yet spawned, #317) |
 | `ClientCommand` | `commands::client_command`: the `tsmod_*` plugins first (one may swallow it), then the port's `tspkg` replies (`plugin_offers`), then weapons, stunt, rules, the active bot backend, in that order |
 | `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3), through `ham`; after `PostThink`, `plugin_offers::client_ready` |
-| `StartFrame` | `bot_backend::start_frame` (the quota, then the active backend's bots: for native, each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), the `tsmod_*` plugins' `start_frame` (a plugin backend runs its bots here), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots, and the plugins' weapon/ammo callbacks) |
+| `StartFrame` | `bot_backend::start_frame` (the quota, then the active backend's bots: for native, each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), the `tsmod_*` plugins' `start_frame` (a plugin backend runs its bots here), `rules::start_frame` (which runs `plugin_offers::start_frame`: the op 5 kicks and the client plugin rules of `plugin_offers::enforce`, #302), then `plugin_api::start_frame` (the plugin API's player snapshots, and the plugins' weapon/ammo callbacks) |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
 | `GetWeaponData`/`CmdStart` | `weapons` |
