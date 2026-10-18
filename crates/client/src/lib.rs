@@ -25,6 +25,7 @@ pub mod hud;
 pub mod input;
 pub mod joystick;
 pub mod menus;
+pub mod plugins;
 pub mod prediction;
 pub mod spectator;
 pub mod state;

@@ -12,6 +12,7 @@ the ABI and the loader underneath them.
 | The ABI: types, constants, contract (`no_std`) | `crates/client-ext-api` (`ts-client-ext-api`) |
 | Naming and header rules (shared with the server loader) | `crates/shared/src/plugin_lib.rs` |
 | The loader, the approval gate seam, dispatch, the table's logic | `crates/client/src/ext/` (`mod.rs`, `gate.rs`, `events.rs`, `view.rs`), no `unsafe` |
+| The approval store's gate, start-up verification and prompt (#297) | `crates/client/src/plugins/` (client-plugins.md §5, §7.1) |
 | Opening a library, `TSRS_ClientExtLoad`, the table's `extern "C"` functions | `crates/client-dll/src/ext.rs` |
 | Engine wrappers it added | `goldsrc::ext::gl` (`renderer`, `proc_address`, `with_saved_state`), `ClEngine::server_address` (`goldsrc::ext::hud`) |
 | The stub extension and its helper | `crates/tsmod-client-test` (`cargo xtask client-plugins`) |
@@ -44,7 +45,8 @@ At `Initialize` (after the gameplay rulesets register, before `HUD_Init`) the cl
    every platform's build. A file named for another platform, or whose ELF/PE header says another
    platform or architecture, is skipped with a console line (`shared::plugin_lib`). Files are
    taken in name order.
-2. Adds the approval gate's packaged candidates (`ApprovalGate::packaged`, §3; none yet).
+2. Adds the approval gate's packaged candidates (`ApprovalGate::packaged`, §3: each installed
+   package's library for this platform, `cl_plugins/<id>/<version>/files/...`, named `<id>`).
 3. Asks the **approval gate** about each candidate. Nothing the gate doesn't approve is mapped.
 4. Opens each approved library, calls its exported `TSRS_ClientExtLoad(api, api_size, info, out,
    out_size)` once, and checks the result: it must return `OK`, leave `out->size` alone, and set
@@ -59,7 +61,7 @@ A plugin approved after start (a server offer, client-plugins.md §9) goes throu
 `ts_client::ext::load_one`: the same gate check and load, then `init` at once and `vid_init` if a
 map is loaded.
 
-## 3. The approval gate (the seam for #297)
+## 3. The approval gate
 
 `ts_client::ext::gate::ApprovalGate` is what the loader and `verified_spawn` ask:
 
@@ -68,31 +70,38 @@ pub trait ApprovalGate {
     fn packaged(&self, game_dir: &Path) -> Vec<Candidate> { Vec::new() } // cl_plugins/<id>/<version>/ libraries
     fn check_library(&self, c: &Candidate) -> Result<Approved, String>;    // hash everything, compare with the store
     fn check_spawn(&self, plugin: &Approved, library: &Path, exe: &Path) -> Result<(), String>; // re-hash before a spawn
+    fn server_changed(&self, server: Option<&str>) -> Vec<Candidate> { Vec::new() } // scope = "server" ones to load now
+    fn waits_for_server(&self) -> bool { false }
 }
 ```
 
 `Approved` carries the plugin id (`webview`, or `manual:<name>` for a hand-installed library), the
 directory name under `cl_plugins_data/`, and a source for the console.
 
-* **Default:** `DenyUnapproved`. With no approval store built in, nothing is approved, so nothing
-  loads (client-plugins.md §1: nothing loads without the player's approval).
+* **The store's gate** (`ts_client::plugins::StoreGate`, issue #297): `ts-client-dll`'s
+  `Initialize` calls `ts_client::plugins::install()`, which verifies every plugin with
+  `plugin-pkg`, shows the start-up prompt and installs the gate with `set_gate`, then
+  `ext::load_all()`. `packaged` lists the installed packages' libraries; `check_library` maps
+  only an allowed, byte-for-byte match whose `[requires] port` and `client_ext_api` this client
+  meets, hashing again anything a prompt stood in front of; `check_spawn` re-hashes the file
+  against the plugin's approval (`Entry::check_file`; any approved file of the plugin, so for a
+  hand-installed library the files its `tsmod_<name>.files` lists, or that list itself). A
+  `scope = "server"` approval doesn't load at start: the loader watches the server
+  (`waits_for_server`) and loads it through `load_one` on connecting to a listed address
+  (`server_changed`), after which it stays loaded (client-plugins.md §9). `cl_plugins 0` gives
+  no candidates and denies everything.
+* **Without a gate installed:** `DenyUnapproved`. Nothing is approved, so nothing loads
+  (client-plugins.md §1: nothing loads without the player's approval).
 * **Development override:** in a **debug build only** (`debug_assertions`, the profile
   `cargo xtask install` uses by default), `TSRS_DEV_CLIENT_EXT=name,name,...` in the environment
   approves those hand-installed `cl_dlls/tsmod_<name>` libraries without hashing, and lets
   `verified_spawn` start the files listed (one relative path per line) in
   `cl_dlls/tsmod_<name>.files` (client-plugins.md §5.3). The loader says so on the console. A
-  release build ignores the variable and says that instead. It exists so `cargo xtask
-  client-plugins` can load the stub before the approval store does; #297's `xtask plugin-approve`
-  replaces it.
-* **Plugging in the store (#297):** build a gate over `plugin-pkg`'s store and call
-  `ts_client::ext::set_gate(Box::new(gate))` from `ts-client-dll`'s `Initialize` before
-  `ext::load_all()`. `packaged` lists the installed packages' libraries for this platform;
-  `check_library` hashes every file and compares with `approved.toml` (client-plugins.md §5.2),
-  returning the reason for the start-up prompt when it fails; `check_spawn` re-hashes `exe` against
-  the plugin's approval. The prompt itself is #297's (it can run inside `check_library`, or the
-  gate can collect the failures and #297 can load the newly approved plugins with `load_one`).
-  `cl_plugins 0` (client-plugins.md §8) belongs in the gate too: return no candidates and deny
-  everything.
+  release build ignores the variable and says that instead. It wraps the store's gate
+  (`gate::with_dev_override`), and start-up neither verifies nor prompts for the libraries it
+  names. `cargo xtask client-plugins` approves its fixtures with `xtask plugin-approve` and keeps
+  one (`test_refuse`) on the override, so both stay tested.
+
 
 ## 4. Callbacks
 
@@ -185,9 +194,8 @@ The gaps against the webview spec (corpses, ducking, GLES state) are issue #306.
   says "alive".
 * **`LocalState` has no ducking flag** yet (the webview spec lists `ducking`).
 * **Not built here:** `TSExt` and `claim_channel`/`user_message` (#294); the interception hooks,
-  `hud_set_hidden`, `hud_elements` and `menu_reply` (#295); the approval store, the prompt,
-  packaged candidates and `cl_plugins*` (#296, #297); a server's `suspend` (client-plugins.md
-  §13.3).
+  `hud_set_hidden`, `hud_elements` and `menu_reply` (#295); a server's `suspend`
+  (client-plugins.md §13.3).
 
 ## 9. Tests
 
@@ -195,15 +203,18 @@ The gaps against the webview spec (corpses, ducking, GLES state) are issue #306.
   events, edges, bearings, descriptor checks), `-p shared plugin_lib`, `-p goldsrc net_tests`,
   `-p xtask client_plugins`.
 * **`cargo xtask client-plugins [fwgs fwgs-win ...]`** (dev profile only; FWGS roots, default
-  both; about 40 s on `fwgs`, 70 s on `fwgs-win`): installs the stub as `cl_dlls/tsmod_test`, its
+  both; about 60 s on `fwgs`, 110 s on `fwgs-win`): installs the stub as `cl_dlls/tsmod_test`, its
   helper and `tsmod_test.files`, and the fixtures the loader must skip (another API version, a bad
   descriptor size, a refusal, the client library renamed (no export), `tsmod_unapproved` (the
-  gate's denial), the other architecture, junk, another platform's name). The game runs with
-  `TSRS_DEV_CLIENT_EXT=test,test_badver,test_badsize,test_refuse,noexport`. The listen-server
+  gate's denial), the other architecture, junk, another platform's name). `xtask plugin-approve`
+  approves `test`, `test_badver`, `test_badsize` and `noexport` in a fresh `approved.toml`;
+  the game runs with `TSRS_DEV_CLIENT_EXT=test_refuse`, and with the approval fixtures of
+  client-plugins.md §11 e2e 1 (packages, tampering, the prompt hook) beside them. The listen-server
   script on ts_dojo joins and spawns, sets `tsext_test_cvar 5`, presses `K_AUX32` with
   `ts_dev_key`, `+use` and `+attack`, adds a stopped bot in front of the host, runs
-  `tsext_test_spawn` (an unlisted file refused, the listed helper started), suspends the extension
-  and runs its report command (which must not run), resumes it, runs `tsext_test_report`, kills the
-  host and reports again. xtask checks the loader's console lines, the helper's `spawned.txt`, and
+  `tsext_test_spawn` (a file outside the approval refused, the listed helper started), suspends the
+  extension and runs its report command (which must not run), resumes it, runs
+  `tsext_test_report`, kills the host, reports again and runs `cl_plugins_list` and
+  `cl_plugins_verify`. xtask checks the loader's console lines, the helper's `spawned.txt`, and
   every check of `tsmod_client_test::CHECKS` in the stub's `report.txt` (in its data directory, so
   the Wine log buffer doesn't matter). Fixtures are removed afterwards and by every `install`.

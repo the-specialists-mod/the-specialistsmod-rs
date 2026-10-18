@@ -119,8 +119,13 @@ cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, fo
                                           # and fighting, botlearn
 cargo xtask plugins [<root>...]           # the tsmod_* loader (stub plugin + fixtures it must skip) and the stub's
                                           # bot backend (ts_bot_backend test) on a dedicated server, all roots
-cargo xtask client-plugins [fwgs fwgs-win] # the client extension loader (stub + fixtures it must skip) and the
-                                          # extension API on a listen server; dev profile only (~40 s per root)
+cargo xtask client-plugins [fwgs fwgs-win] # the client extension loader (stub + fixtures it must skip), the
+                                          # extension API, and plugin approval (packages, tampering, the
+                                          # start-up prompt's hook) on a listen server; dev profile only
+                                          # (~60 s fwgs, ~110 s fwgs-win)
+cargo xtask plugin-approve <path>... [--root R]
+                                          # approve a local client plugin build (.tspkg, cl_plugins/<id>/<ver>,
+                                          # cl_dlls/tsmod_<name><suffix>) in cl_plugins/approved.toml
 cargo xtask ts21 [--no-clients] [<root>...]
                                           # TS 2.1 mode on every root's dedicated server, driven by rcon:
                                           # the server config's and rcon's ts_gameplay reloads, LMS, The One,
@@ -181,8 +186,10 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   (`docs/implementation/plugin-api.md` §7).
 - `ts_dev_key <key> <1|0>` (client) presses a key through the engine's `Key_Event`;
   `ts_dev_extsuspend <name> <1|0>` suspends a client extension (both need `ts_dev_scriptinput 1`).
-  Client extensions load only if approved; debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
-  (docs/implementation/client-ext-api.md §3).
+  Client extensions load only if approved (`cl_plugins/approved.toml`, the start-up prompt, or
+  `cargo xtask plugin-approve`); debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
+  (docs/implementation/client-ext-api.md §3) and `TSRS_DEV_PLUGIN_PROMPT=<id>=<answer>,...`, which
+  answers the start-up boxes (client-plugins.md §7.1). Release builds ignore both.
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

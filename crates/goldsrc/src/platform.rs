@@ -82,6 +82,92 @@ pub mod sdl {
             unsafe { f(on as c_int) };
         }
     }
+
+    /// Whether the loaded SDL2 has the function `name`.
+    pub fn has(name: &str) -> bool {
+        std::ffi::CString::new(name).is_ok_and(|n| !lookup(&n).is_null())
+    }
+
+    /// The icon of a [`message_box`] (`SDL_MESSAGEBOX_ERROR` / `WARNING` / `INFORMATION`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum BoxKind {
+        Error,
+        Warning,
+        Information,
+    }
+
+    /// One button of a [`message_box`].
+    #[derive(Clone, Copy, Debug)]
+    pub struct BoxButton<'a> {
+        /// What [`message_box`] returns when it's pressed.
+        pub id: i32,
+        pub text: &'a str,
+        /// Enter presses it (`SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT`).
+        pub enter: bool,
+        /// Escape presses it (`SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT`).
+        pub escape: bool,
+    }
+
+    #[repr(C)]
+    struct ButtonData {
+        flags: u32,
+        buttonid: c_int,
+        text: *const std::ffi::c_char,
+    }
+
+    #[repr(C)]
+    struct MessageBoxData {
+        flags: u32,
+        window: *mut c_void,
+        title: *const std::ffi::c_char,
+        message: *const std::ffi::c_char,
+        numbuttons: c_int,
+        buttons: *const ButtonData,
+        color_scheme: *const c_void,
+    }
+
+    type ShowMessageBox = unsafe extern "C" fn(*const MessageBoxData, *mut c_int) -> c_int;
+
+    /// `SDL_ShowMessageBox` with no parent window, buttons left to right in `buttons` order
+    /// (`SDL_MESSAGEBOX_BUTTONS_LEFT_TO_RIGHT`, which SDL before 2.0.12 ignores). Blocks until
+    /// it's answered. The pressed button's id, -1 if the box was closed without one, or `None`
+    /// when SDL2 isn't loaded or the box couldn't be shown. Port addition for the client plugin
+    /// start-up prompt (client-plugins.md §7.1).
+    pub fn message_box(kind: BoxKind, title: &str, text: &str, buttons: &[BoxButton]) -> Option<i32> {
+        let p = lookup(c"SDL_ShowMessageBox");
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null symbol with this name is the SDL2 function with this C signature (SDL2 ABI).
+        let show = unsafe { std::mem::transmute::<*mut c_void, ShowMessageBox>(p) };
+        let cstr = |s: &str| std::ffi::CString::new(s.replace('\0', " ")).unwrap_or_default();
+        let (title, text) = (cstr(title), cstr(text));
+        let labels: Vec<std::ffi::CString> = buttons.iter().map(|b| cstr(b.text)).collect();
+        let data: Vec<ButtonData> = buttons
+            .iter()
+            .zip(&labels)
+            .map(|(b, l)| ButtonData { flags: b.enter as u32 | (b.escape as u32) << 1, buttonid: b.id, text: l.as_ptr() })
+            .collect();
+        let flags = match kind {
+            BoxKind::Error => 0x10,
+            BoxKind::Warning => 0x20,
+            BoxKind::Information => 0x40,
+        } | 0x80;
+        let box_data = MessageBoxData {
+            flags,
+            window: std::ptr::null_mut(),
+            title: title.as_ptr(),
+            message: text.as_ptr(),
+            numbuttons: data.len() as c_int,
+            buttons: data.as_ptr(),
+            color_scheme: std::ptr::null(),
+        };
+        let mut pressed: c_int = -1;
+        // SAFETY: `box_data` and everything it points to (the strings and the button array) live
+        // until the call returns; SDL only reads them, and writes the pressed id to `pressed`.
+        let rc = unsafe { show(&box_data, &mut pressed) };
+        (rc == 0).then_some(pressed)
+    }
 }
 
 /// Windows cursor re-centering (SDK inputw32.cpp, no mouse thread).

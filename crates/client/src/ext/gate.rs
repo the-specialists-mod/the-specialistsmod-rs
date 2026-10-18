@@ -4,16 +4,18 @@
 //!
 //! The loader asks the gate about every candidate before it maps anything, and
 //! `verified_spawn` asks it before starting a process. The real gate is the approval store
-//! (`plugin-pkg`, issue #296) with the start-up prompt and the package candidates (issue #297),
-//! which installs itself with [`set_gate`] at `Initialize`, before the loader runs. Until then the
-//! gate is [`DenyUnapproved`]: nothing is approved, so nothing loads.
+//! (`plugin-pkg`) with the start-up prompt and the package candidates: `crate::plugins`'
+//! `StoreGate` (issue #297), which `ts-client-dll` installs with [`super::set_gate`] at
+//! `Initialize`, before the loader runs. Without it the gate is [`DenyUnapproved`]: nothing is
+//! approved, so nothing loads.
 //!
 //! **Development override** ([`DevOverride`]): in a debug build only (`debug_assertions`, the
 //! profile `cargo xtask install` uses by default), the environment variable
 //! [`DEV_ENV`]`=name,name,...` approves the hand-installed `cl_dlls/tsmod_<name>` libraries it
 //! names, unhashed, and their helpers listed in `cl_dlls/tsmod_<name>.files`. A release build
-//! ignores the variable and says so. It exists so `cargo xtask client-plugins` can load the stub
-//! extension before the approval store exists; #297's `xtask plugin-approve` replaces it.
+//! ignores the variable and says so. It wraps the store's gate ([`with_dev_override`]); `cargo
+//! xtask client-plugins` approves its fixtures with `xtask plugin-approve` and keeps one on the
+//! override, so both stay tested.
 
 use std::path::{Path, PathBuf};
 
@@ -58,6 +60,17 @@ pub trait ApprovalGate {
     /// Whether the extension approved as `plugin` (library `library`) may start `exe` now: the
     /// file re-hashed against the approval just before it starts (client-plugins.md §5.2).
     fn check_spawn(&self, plugin: &Approved, library: &Path, exe: &Path) -> Result<(), String>;
+    /// The server changed (`None`: disconnected): candidates that may load now, approved for
+    /// this server only (`scope = "server"`, client-plugins.md §9). The loader loads each with
+    /// `load_one`, which asks [`Self::check_library`] again.
+    fn server_changed(&self, _server: Option<&str>) -> Vec<Candidate> {
+        Vec::new()
+    }
+    /// Whether [`Self::server_changed`] can return anything (the loader watches the server only
+    /// then, or while extensions are loaded).
+    fn waits_for_server(&self) -> bool {
+        false
+    }
 }
 
 /// The default gate: nothing is approved. The approval store (#296, #297) replaces it.
@@ -107,6 +120,12 @@ impl ApprovalGate for DevOverride {
     fn packaged(&self, game_dir: &Path) -> Vec<Candidate> {
         self.inner.packaged(game_dir)
     }
+    fn server_changed(&self, server: Option<&str>) -> Vec<Candidate> {
+        self.inner.server_changed(server)
+    }
+    fn waits_for_server(&self) -> bool {
+        self.inner.waits_for_server()
+    }
     fn check_library(&self, c: &Candidate) -> Result<Approved, String> {
         if self.names.contains(&c.name) {
             return Ok(Approved {
@@ -126,18 +145,31 @@ impl ApprovalGate for DevOverride {
     }
 }
 
-/// The gate a build starts with: [`DenyUnapproved`], under the [`DevOverride`] when this is a
-/// debug build and [`DEV_ENV`] is set. The note is for the console.
+/// The gate a build starts with when nothing installed one: [`DenyUnapproved`], under the
+/// [`DevOverride`] when this is a debug build and [`DEV_ENV`] is set. The note is for the console.
 pub fn default_gate(env: Option<&str>) -> (Box<dyn ApprovalGate>, Option<String>) {
+    with_dev_override(Box::new(DenyUnapproved), env, cfg!(debug_assertions))
+}
+
+/// The names [`with_dev_override`] approves for `env` in a build with `debug` assertions:
+/// none in a release build, and the note for the console either way.
+pub fn dev_override_names(env: Option<&str>, debug: bool) -> (Vec<String>, Option<String>) {
     let names = env.map(dev_names).unwrap_or_default();
     if names.is_empty() {
-        return (Box::new(DenyUnapproved), None);
+        return (names, None);
     }
-    if !cfg!(debug_assertions) {
-        return (Box::new(DenyUnapproved), Some(format!("{DEV_ENV} is ignored in release builds")));
+    if !debug {
+        return (Vec::new(), Some(format!("{DEV_ENV} is ignored in release builds")));
     }
     let note = format!("{DEV_ENV}: approving {} without hashing (debug build only)", names.join(", "));
-    (Box::new(DevOverride { names, inner: Box::new(DenyUnapproved) }), Some(note))
+    (names, Some(note))
+}
+
+/// `inner` under the [`DevOverride`] when `debug` (pass `cfg!(debug_assertions)`) and [`DEV_ENV`]
+/// names libraries; `inner` alone otherwise. The note is for the console.
+pub fn with_dev_override(inner: Box<dyn ApprovalGate>, env: Option<&str>, debug: bool) -> (Box<dyn ApprovalGate>, Option<String>) {
+    let (names, note) = dev_override_names(env, debug);
+    if names.is_empty() { (inner, note) } else { (Box::new(DevOverride { names, inner }), note) }
 }
 
 #[cfg(test)]
@@ -174,6 +206,16 @@ mod tests {
             assert!(note.unwrap().contains("ignored"));
         }
         assert!(g.check_library(&cand("other")).is_err(), "only the named ones");
+    }
+
+    #[test]
+    fn release_builds_ignore_the_override() {
+        let (g, note) = with_dev_override(Box::new(DenyUnapproved), Some("test"), false);
+        assert!(g.check_library(&cand("test")).is_err());
+        assert!(note.unwrap().contains("ignored in release builds"));
+        let (g, note) = with_dev_override(Box::new(DenyUnapproved), Some("test"), true);
+        assert!(g.check_library(&cand("test")).is_ok());
+        assert!(note.unwrap().contains("debug build only"));
     }
 
     #[test]

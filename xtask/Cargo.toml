@@ -11,3 +11,6 @@ ts-plugin-api = { path = "../crates/plugin-api" }
 # The client extension suffixes, and the stub extension's checks (`cargo xtask client-plugins`).
 ts-client-ext-api = { path = "../crates/client-ext-api" }
 tsmod-client-test = { path = "../crates/tsmod-client-test" }
+# Client plugin packages and the approval store (`cargo xtask plugin-approve`, the client-plugins
+# check's packages).
+plugin-pkg = { path = "../crates/plugin-pkg" }
