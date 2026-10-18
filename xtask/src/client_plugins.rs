@@ -311,6 +311,8 @@ fn script() -> String {
     cfg += &format!("ts_dev_key {k} 1\nwait;wait\nts_dev_key {k} 0\n{}", secs(0.5), k = tsmod_client_test::TEST_KEY);
     cfg += &format!("+use\nwait;wait;wait\n-use\n{}", secs(0.5));
     cfg += &format!("+attack\nwait;wait;wait\n-attack\n{}", secs(0.5));
+    // Minor 2 (#306): a finished duck sets `local::DUCKING`.
+    cfg += &format!("+duck\n{}-duck\n{}", secs(1.0), secs(0.5));
     cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}", secs(8.0));
     cfg += &format!("ts_tp 2 0 -1200 60 270 0\n{}ts_tp 1 0 -1344 60 90 0\n{}ts_face 1 2\n{}", secs(0.5), secs(1.0), secs(0.5));
     // Minor 1: `TSExt` both ways (with the bot in, for the server's "not a port client"), the
@@ -323,10 +325,19 @@ fn script() -> String {
     }
     cfg += "tsext_test_arm none\n";
     cfg += &format!("say tsext_block_me\n{}say tsext_hold_me\n{}say tsext_pass_me\n{}", secs(1.0), secs(2.0), secs(1.0));
+    // Minor 2 (#314): the health box and chat hidden and shown again; the server's MOTD (its
+    // answer to `motd`) taken over, answered, given back on `menu_shown`, and taken over again
+    // for the suspension below to give back.
+    cfg += &format!("echo XTASK: hud\ntsext_test_hud hide\n{}tsext_test_hud show\n{}", secs(1.0), secs(0.5));
+    cfg +=
+        &format!("echo XTASK: menus\ntsext_test_menu take\nmotd\n{}tsext_test_menu bad\ntsext_test_menu close\n{}", secs(1.0), secs(0.5));
+    cfg += &format!("motd\n{}tsext_test_menu giveback\n{}motd\n{}", secs(1.0), secs(1.0), secs(1.0));
     cfg += &format!("echo XTASK: spawn\ntsext_test_spawn\n{}", secs(1.0));
     cfg += &format!("echo XTASK: suspend\nts_dev_extsuspend test 1\n{}tsext_test_report\n{}", secs(1.0), secs(0.5));
     cfg += &format!("ts_dev_extsuspend test 0\n{}", secs(0.5));
     cfg += &format!("echo XTASK: report\ntsext_test_report\n{}", secs(0.5));
+    // Minor 2 (#306): the bot in view dies; it must leave `visible_players` while it does.
+    cfg += &format!("ts_as 2 kill\n{}", secs(1.0));
     cfg += &format!("echo XTASK: kill\nkill\n{}", secs(2.0));
     cfg += "tsext_test_report\nts_dev_extlist\ncl_plugins_list\ncl_plugins_verify\nts_bot_quota 0\n";
     cfg
@@ -374,6 +385,14 @@ pub fn client_plugin_checks(text: &str, t: &Target, report: &str, spawned: &str)
         (
             "a renamed server command refused".into(),
             ext("server command \"_special\" blocked (a bad replacement)", "") && text.contains("changes the command's name"),
+        ),
+        // Minor 2 (#314).
+        ("the HUD hidden".into(), ext("hud hidden by test: 0x41", "")),
+        ("the MOTD taken over".into(), ext("MOTD taken over by test", "")),
+        ("the taken-over MOTD answered".into(), ext("menu 3 answered: Close", "")),
+        (
+            "taken-over menus failed open (menu_shown, suspension)".into(),
+            text.lines().filter(|l| l.contains("[ts ext] menu 3 of test given back to the port")).count() >= 2,
         ),
         // Issue #315: the clash check behind add_command/register_cvar is quiet on FWGS.
         ("no engine warning for a new command or cvar".into(), !text.contains("non-existent cvar \"tsext_")),
@@ -539,6 +558,11 @@ mod tests {
             "command special blocked",
             "server command \"_special\" sent as \"_special\"",
             "server command \"_special\" blocked (a bad replacement)",
+            "hud hidden by test: 0x41",
+            "MOTD taken over by test",
+            "menu 3 answered: Close",
+            "menu 3 of test given back to the port",
+            "menu 3 of test given back to the port",
         ] {
             log += &format!("[ts ext] {l}\n");
         }

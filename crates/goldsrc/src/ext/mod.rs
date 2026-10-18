@@ -9,6 +9,8 @@ pub mod gles_state;
 #[cfg(feature = "client")]
 pub mod hud;
 #[cfg(feature = "client")]
+pub mod hud_record;
+#[cfg(feature = "client")]
 pub mod models;
 pub mod movement;
 #[cfg(feature = "client")]

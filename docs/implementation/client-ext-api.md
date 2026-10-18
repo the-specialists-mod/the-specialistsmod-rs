@@ -11,10 +11,11 @@ the ABI and the loader underneath them.
 |---|---|
 | The ABI: types, constants, contract (`no_std`) | `crates/client-ext-api` (`ts-client-ext-api`) |
 | Naming and header rules (shared with the server loader) | `crates/shared/src/plugin_lib.rs` |
-| The loader, the approval gate seam, dispatch, the table's logic | `crates/client/src/ext/` (`mod.rs`, `gate.rs`, `events.rs`, `view.rs`, `intercept.rs`), no `unsafe` |
+| The loader, the approval gate seam, dispatch, the table's logic | `crates/client/src/ext/` (`mod.rs`, `gate.rs`, `events.rs`, `view.rs`, `intercept.rs`; minor 2: `alive.rs`, `takeover.rs`), no `unsafe` |
+| The HUD elements extensions hide and locate (minor 2) | `crates/client/src/hud/elements.rs`, the element draws in `hud/` (`mod.rs`, `status.rs`, `weapons.rs`), `menus::paint_vgui` (the scoreboard), `spectator::redraw` |
 | The approval store's gate, start-up verification and prompt (#297) | `crates/client/src/plugins/` (client-plugins.md §5, §7.1) |
 | Opening a library, `TSRS_ClientExtLoad`, the table's `extern "C"` functions | `crates/client-dll/src/ext.rs` |
-| Engine wrappers it added | `goldsrc::ext::gl` (`renderer`, `proc_address`, `with_saved_state`), `ClEngine::server_address` (`goldsrc::ext::hud`); minor 1: the command filter (`goldsrc::client::set_command_filter`) and the server command filter (`goldsrc::ext::hud::set_server_cmd_filter`, `ClEngine::server_cmd_unfiltered`) |
+| Engine wrappers it added | `goldsrc::ext::gl` (`renderer`, `proc_address`, `with_saved_state`), `ClEngine::server_address` (`goldsrc::ext::hud`); minor 1: the command filter (`goldsrc::client::set_command_filter`) and the server command filter (`goldsrc::ext::hud::set_server_cmd_filter`, `ClEngine::server_cmd_unfiltered`); minor 2: `goldsrc::ext::gles_state` (the GLES save), `goldsrc::ext::hud_record` (draw bounds and dry runs of the 2D HUD primitives), `Cvar::lookup` (#315) |
 | `TSExt` (minor 1): the wire format; the server's sender | `crates/shared/src/protocol/ext.rs`; `crates/server/src/plugin_api/ext.rs` (plugin API version 8, plugin-api.md §13) |
 | The HUD's state/display split for intercepted messages | `crates/client/src/hud/mod.rs` (`on_server_message`, `handle`, `display_released`) |
 | The stub extension and its helper | `crates/tsmod-client-test` (`cargo xtask client-plugins`, with the server stub `crates/tsmod-test` for `TSExt`) |
@@ -33,11 +34,13 @@ the ABI and the loader underneath them.
 * **Minor 1** (#294, #295) named 2 table slots and 4 descriptor slots (30 and 12 stay reserved):
   `ClientExtApi::claim_channel` and `release`; `ClientExt::user_message`, `message_pre`,
   `command_pre` and `server_cmd_pre` (§10, §11). An extension built for minor 0 loads unchanged.
-* **Minor 2** (#306): `local::DUCKING` in `LocalState::flags`, dead players left out of
-  `visible_players` (§6), and the GLES state saved around `redraw` (§4). No slot changes; an
-  extension built for minor 1 loads unchanged, and one built for minor 2 that needs these checks
-  `ClientExtApi::minor` (a minor-1 client never sets `DUCKING`).
-* Planned: `hud_set_hidden`, `hud_elements` and `menu_reply` (#314), minor 2.
+* **Minor 2** (#306, #314) named 3 table slots and 2 descriptor slots (27 and 10 stay reserved):
+  `ClientExtApi::hud_set_hidden`, `hud_elements` and `menu_reply`; `ClientExt::menu_shown` and
+  `menu_closed` (§12). It also added `local::DUCKING` in `LocalState::flags`, left dead players
+  out of `visible_players` (§6), and saves the GLES state around `redraw` (§4). An extension built
+  for minor 1 loads unchanged and works as before (§12: its block of a menu stays a block), and
+  one built for minor 2 checks `ClientExtApi::minor` (a minor-1 client leaves the new slots NULL
+  and never sets `DUCKING`).
 
 The webview spec says size and version checks are exact, "the same as plugin-api". That holds for
 `VERSION`; the reserved slots and `MINOR` are a port addition so that #294 and #295 don't break
@@ -134,6 +137,8 @@ extension gets nothing but `resume` and `shutdown`.
 | `message_pre(msg, out, out_len) -> verdict` (minor 1) | each user message from the server, before the HUD (§11) |
 | `command_pre(cmd) -> verdict` (minor 1) | each client command the port registered, before it runs (§11) |
 | `server_cmd_pre(cmd, out, cap) -> verdict` (minor 1) | each command the port's code sends to the server (§11) |
+| `menu_shown(kind) -> bool` (minor 2) | `HUD_Frame`, once for each menu the extension took over and hasn't answered; 0 gives it back (§12) |
+| `menu_closed(kind, reason)` (minor 2) | a takeover ended without the extension's answer: `EXPIRED`, `REPLACED`, `RESET`, `GIVEN_BACK` (§12) |
 
 ## 5. Game events
 
@@ -151,8 +156,8 @@ extension gets nothing but `resume` and `shutdown`.
 
 ## 6. The table
 
-Every function is non-NULL in this client (minor 1's are `Option`s in Rust only because a minor-0
-client leaves them NULL). Strings are NUL-terminated; string results go into a caller's buffer
+Every function is non-NULL in this client (minor 1's and 2's are `Option`s in Rust only because an
+older client leaves them NULL). Strings are NUL-terminated; string results go into a caller's buffer
 (cut to fit, always terminated) and the call returns the full length. Codes: `OK` 0, `NOT_FOUND`
 -1, `INVALID` -2, `UNAVAILABLE` -3, `SUSPENDED` -4, `EXISTS` -6, `REFUSED` -7, `FAILED` -8.
 
@@ -218,7 +223,7 @@ All need `ts_dev_scriptinput 1` and `sv_cheats 1`, like scripted input:
 * `ts_dev_extlog 1` (a cvar, no gate): the interception hooks' decisions as `[ts ext]` console
   lines: each presentation message passed, rewritten, or blocked or held (with its printable
   text), each release, each blocked client command, and each command to the server as it was sent
-  or blocked (§11).
+  or blocked (§11); minor 2's menu takeovers and HUD masks (§12).
 
 ## 8. Deviations and gaps
 
@@ -231,9 +236,17 @@ All need `ts_dev_scriptinput 1` and `sv_cheats 1`, like scripted input:
 * **"Alive" in `visible_players` is the client's inference** (§6): TS's client has no per-player
   dead flag and the server sends none; a player that dies and respawns while out of view, without
   becoming an observer, counts as alive from its first packet in view, as it is.
-* **Not built here:** `hud_set_hidden`, `hud_elements` and `menu_reply` (#314); the plugin offer
-  flow and its cards (#299) and `cl_plugins_menu` (#311) (client-plugins.md); a server's
-  `suspend` (client-plugins.md §13.3).
+* **Menu takeover is the port's menus** (§12). The webview spec's `reply` also names "a buy
+  item", but TS's buy menu isn't a server message (the client opens it on `Spectator`, which is
+  observe-only), so it can't be taken over. A taken-over menu's handle expires on its kind's newer
+  menu, its `ShowMenu` time, `ResetHUD` and a server change, as the spec says; on fail open the
+  port shows the menu from its messages, so a `ShowMenu`'s display time starts again then.
+* **Centre prints** (`hud::CENTRE`) are drawn by the engine (`pfnCenterPrint`): while hidden, a new
+  one isn't printed at all (it isn't shown later), and `hud_elements` has no rectangle for it. The
+  HLTV overview map is drawn in the 3D pass and isn't part of `hud::SPECTATOR`. `hud::PICKUPS`
+  exists for the spec's list; TS 3.0 draws no pickup notices.
+* **The plugin offer flow** and its cards (#299) and `cl_plugins_menu` (#311) are
+  client-plugins.md's.
 * **`svc_stufftext` can't be intercepted.** The engine runs a server's stuffed text itself; no
   client library sees it, so there is no hook for it (the webview spec §7.6 lists it as
   unreachable too). `server_cmd_pre` is about the other direction: commands the port sends.
@@ -284,6 +297,25 @@ All need `ts_dev_scriptinput 1` and `sv_cheats 1`, like scripted input:
   is rewritten (its weapon `tsext_rewritten`) while its `DEATH` event still comes. xtask checks
   the stub's new checks and the `[ts ext]` lines, the kill feed's `with tsext_rewritten`, and the
   replacement's warning.
+* **Minor 2 in the same run** (#306, #314, #315): the script holds `+duck` for a second (the
+  stub's `local_ducking` check), hides the health box and chat with `tsext_test_hud hide` (the
+  stub checks that `hud_elements` still places the hidden health box: `HIDDEN`, `DRAWN`, `RECT`)
+  and shows them again (`hud_elements` at the report: all 20, named, the health box placed);
+  `tsext_test_menu take` and `motd` (the server's `SendMOTDToClient`) make a takeover, `bad`
+  checks `menu_reply`'s refusals (`INVALID` for a key of a MOTD and an unknown kind, `NOT_FOUND`
+  for a kind it didn't take over), `close` answers it (`OK`, then `NOT_FOUND`); another `motd` and
+  `tsext_test_menu giveback` (`menu_shown` says 0) gives it back (`menu_closed` `GIVEN_BACK`), and
+  a third `motd` is given back by the suspension. After the report, `ts_as 2 kill` kills the bot
+  in view, which must be out of `visible_players` 10 frames later. xtask also checks the `[ts ext]`
+  lines (`hud hidden by test: 0x41`, `MOTD taken over by test`, `menu 3 answered: Close`, two
+  `menu 3 of test given back to the port`) and that FWGS logged no "non-existent cvar" warning
+  for the stub's `tsext_*` names (#315).
+* Unit tests for minor 2: `-p ts-client-ext-api` (minor 2's slots come after minor 1's),
+  `-p ts-client ext::alive`, `ext::takeover` (what each menu offers, chunks, replies, expiry,
+  replacement, give back), `ext::intercept` (menu blocks recorded), `ext::tests` (the hidden mask
+  without suspended extensions), `ext::view` (local flags), `hud::elements`, `-p goldsrc
+  ext::gles_state` (a fake GL context: GLES 1 and 2+ state set back, the order of the VAO and its
+  buffers), `ext::hud_record` (bounds, dry runs, records inside records).
 
 ## 10. `TSExt` channels (minor 1, #294)
 
@@ -366,3 +398,74 @@ the port ignores anything else, with a console warning once per extension and ca
   `redraw`) is the prompt's part (#297, client-plugins.md §7.3 "No cover").
 * **`release` from inside `message_pre`** finds nothing (`NOT_FOUND`): the holds are being
   worked on. Release later (a frame, a command).
+
+## 12. HUD control and menu takeover (minor 2, #314)
+
+The webview spec's §7.8 and §7.9, enforced by the port.
+
+**HUD elements** (`ts_client_ext_api::hud`, 20 ids in the spec's order, `hud::NAMES`):
+
+| Id | What the port draws for it |
+|---|---|
+| `health` | the status panel's box, stance figure, health number and icon, and the team bar |
+| `armour` | the kevlar icon and number |
+| `ammo` | `DrawWeaponInfo` (weapon name, fire mode, clip and reserve, attachments) |
+| `weapon_select` | `DrawWeaponList` |
+| `crosshair` | `DrawCrosshair` or the wire panel, and the crosshair ID name |
+| `killfeed` | `CHudDeathNotice` |
+| `chat` | `CHudSayText` (also at intermission) |
+| `notify` | `DrawTSMessages` (`TSMessage`, the buy menu's notices) |
+| `centre` | centre prints (the engine's; see §8) |
+| `hudtext` | `CHudMessage` (`HudText`, titles) |
+| `timer` | `DrawRoundTimer` |
+| `cash` | the free slots and credits boxes |
+| `kungfu` | `DrawKungFuLabel` and the kung fu icon |
+| `stunt` | the movement icon and the divesteps (drawn from the crosshair's code, but their own element) |
+| `powerup` | `DrawPowerup` and the slow-motion icon |
+| `objective` | `DrawFlagPanel` and `DrawObjectiveMarkers` |
+| `pickups` | nothing (TS 3.0 draws none) |
+| `status_icons` | `CHudStatusIcons` |
+| `spectator` | the spectator panel and the HLTV name tags |
+| `scoreboard` | the scoreboard |
+
+Not elements: the text menu, the buy menu, the train, the status bar, teammate markers, laser
+dots and the logo.
+
+* `hud_set_hidden(ext, mask)` sets that extension's mask (`OK`; `INVALID` for a bit past the 20;
+  `SUSPENDED`). An element is hidden while any extension that isn't suspended hides it
+  (`ext::hidden_mask`): a suspension shows that extension's elements again, a resume hides them
+  again.
+* **Hidden elements keep their state.** Each element's draw code runs inside
+  `hud::elements::draw`; a hidden one runs as a dry run (`goldsrc::ext::hud_record::record`), in
+  which the 2D primitives (`SPR_Draw*`, `FillRGBA`/`FillRGBABlend`, `DrawCharacter`,
+  `DrawConsoleString`, `CenterPrint`) only count what they would cover. So timers, fades and
+  expiries move on exactly as when it's drawn, and showing it shows it as it would be now.
+* `hud_elements(out, max)` lists the 20 with flags `HIDDEN`, `DRAWN` (it drew, or would have, at
+  the last redraw) and `RECT` (`rect` is the bounds of everything it last drew, kept while it draws
+  nothing). Rectangles are worked out only while an extension is loaded; with none and nothing
+  hidden, `draw` is a plain call, as TS.
+
+**Menu takeover** (`ts_client::ext::takeover`, pure; kinds `menu::TEXT`, `VGUI`, `MOTD`):
+
+* A `BLOCK` verdict (in `message_pre` or a `release`) on a `ShowMenu`, a `VGUIMenu` the port would
+  show (the team menu 2 in teamplay, the briefing 4, the MOTD window 5) or a `MOTD` takes it over.
+  The port keeps its messages as the blocking extension saw them (a text menu's and a MOTD's
+  chunks, until the last) and what it offers: a text menu's keys, the team menu's teams (1 to the
+  `TeamNames` count, at most 4, and 5, auto-assign, as `SlotInput`), or closing only.
+* `menu_reply(ext, kind, choice)` answers it once: `"N"` a key the text menu has (the port sends
+  `menuselect N`, as `SelectMenuItem`), `"N"` a team the team menu offers (`jointeam N` as a client
+  command and the local team number, as `CMenuHandler_StringCommandWatch`), or `""` (or NULL) to
+  close it with nothing sent (Esc, cancel, OK). Other choices are `INVALID` and the takeover stays;
+  no open takeover of that kind of that extension's (or one whose chunks aren't all in) is
+  `NOT_FOUND`. The answer goes through `ClEngine::server_cmd` like the port's own, so other
+  extensions' `server_cmd_pre` sees it.
+* It ends without an answer (`menu_closed`) on a newer menu of its kind, displayed or taken over
+  (`REPLACED`), the server closing it (a `ShowMenu` without keys) or its `ShowMenu` time running
+  out (`EXPIRED`), and `ResetHUD` or a server change (`RESET`).
+* **Fail open:** when its extension is suspended, or its `menu_shown(kind)` (asked every frame)
+  returns 0, the port displays the menu from the kept messages (`hud::display_released`), and
+  `menu_closed(kind, GIVEN_BACK)` tells the extension (not when suspended). An extension without
+  `menu_shown` (built for minor 1) is never asked, so its block stays a block until a suspension.
+* `ts_dev_extlog 1` logs `<message> taken over by <ext>`, `menu <kind> answered: <answer>`,
+  `menu <kind> reply "<choice>" refused (<code>)`, `menu <kind> of <ext> closed (<reason>)`,
+  `menu <kind> of <ext> given back to the port`, and `hud hidden by <ext>: <mask>`.

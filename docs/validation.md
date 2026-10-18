@@ -237,7 +237,12 @@ from the engine log after the game exits, so they hold under Wine's buffered log
 client check it needs a display: from a session without one, start an Xvfb and run xtask with
 `DISPLAY` set to it, `SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset (§4). It passed on `fwgs`
 and `fwgs-win` (roughly a minute each, longer under Wine) on 2026-10-18, with both the approval and
-the minor-1 checks.
+the minor-1 checks. The minor-2 checks (#306, #314: ducking, a dying player out of
+`visible_players`, the HUD hidden and placed, the MOTD taken over, answered and given back) and
+#315's "no non-existent cvar warning" were added after that run and haven't run in an engine yet.
+The GLES state save (#306) isn't run by any check: xtask picks no renderer, and FWGS's desktop
+default is `gl`, so it is covered by the unit tests only (`-p goldsrc ext::gles_state`); a run
+with `-ref gles2` (or `gles1`, `gl4es`) would exercise it.
 
 The start-up box itself is answered by the debug-only hook in those runs. The real
 `SDL_ShowMessageBox` was checked by hand on `fwgs` under Xvfb on 2026-10-18 (no hook, one new

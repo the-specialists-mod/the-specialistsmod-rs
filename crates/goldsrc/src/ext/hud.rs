@@ -118,19 +118,40 @@ impl ClEngine {
         if h == 0 { 0 } else { cl_eng!(pfnSPR_Height(h, frame)) }
     }
     pub fn spr_set(&self, h: HSPRITE, rgb: [i32; 3]) {
+        super::hud_record::set_sprite(h);
         cl_eng!(pfnSPR_Set(h, rgb[0], rgb[1], rgb[2]));
     }
     fn rc_ptr(rc: Option<&wrect_t>) -> *const wrect_t {
         rc.map_or(std::ptr::null(), |r| r as *const wrect_t)
     }
+    /// A sprite draw's place for [`super::hud_record`]: false in a dry run.
+    fn note_sprite(&self, frame: i32, x: i32, y: i32, rc: Option<&wrect_t>) -> bool {
+        if !super::hud_record::recording() {
+            return true;
+        }
+        let (w, h) = match rc {
+            Some(r) => (r.right - r.left, r.bottom - r.top),
+            None => {
+                let spr = super::hud_record::sprite();
+                (self.spr_width(spr, frame), self.spr_height(spr, frame))
+            }
+        };
+        super::hud_record::note(x, y, w, h)
+    }
     pub fn spr_draw(&self, frame: i32, x: i32, y: i32, rc: Option<&wrect_t>) {
-        cl_eng!(pfnSPR_Draw(frame, x, y, Self::rc_ptr(rc)));
+        if self.note_sprite(frame, x, y, rc) {
+            cl_eng!(pfnSPR_Draw(frame, x, y, Self::rc_ptr(rc)));
+        }
     }
     pub fn spr_draw_additive(&self, frame: i32, x: i32, y: i32, rc: Option<&wrect_t>) {
-        cl_eng!(pfnSPR_DrawAdditive(frame, x, y, Self::rc_ptr(rc)));
+        if self.note_sprite(frame, x, y, rc) {
+            cl_eng!(pfnSPR_DrawAdditive(frame, x, y, Self::rc_ptr(rc)));
+        }
     }
     pub fn spr_draw_holes(&self, frame: i32, x: i32, y: i32, rc: Option<&wrect_t>) {
-        cl_eng!(pfnSPR_DrawHoles(frame, x, y, Self::rc_ptr(rc)));
+        if self.note_sprite(frame, x, y, rc) {
+            cl_eng!(pfnSPR_DrawHoles(frame, x, y, Self::rc_ptr(rc)));
+        }
     }
 
     /// `SPR_GetList`: parses e.g. `sprites/hud.txt`. Entries are copied; the engine keeps the list.
@@ -159,17 +180,31 @@ impl ClEngine {
     pub fn screen(&self) -> Screen {
         let mut info = SCREENINFO { iSize: size_of::<SCREENINFO>() as i32, ..Default::default() };
         cl_eng!(pfnGetScreenInfo(&mut info));
+        super::hud_record::set_char_height(info.iCharHeight);
         Screen { width: info.iWidth, height: info.iHeight, char_height: info.iCharHeight, char_widths: info.charWidths }
     }
 
     /// `pfnDrawCharacter`: returns the advance.
     pub fn draw_character(&self, x: i32, y: i32, ch: u8, rgb: [i32; 3]) -> i32 {
+        if super::hud_record::recording() {
+            // The advance, from the screen's character widths, without drawing.
+            let w = self.screen().char_widths.get(ch as usize).map_or(0, |&w| w as i32);
+            if !super::hud_record::note(x, y, w, super::hud_record::char_height()) {
+                return w;
+            }
+        }
         cl_eng!(pfnDrawCharacter(x, y, ch as c_int, rgb[0], rgb[1], rgb[2]))
     }
 
     /// `pfnDrawSetTextColor` + `pfnDrawConsoleString`: the single wrapper for them. Console font
     /// string with an explicit colour; returns the x after the text.
     pub fn draw_console_string(&self, x: i32, y: i32, rgb: [f32; 3], text: &str) -> i32 {
+        if super::hud_record::recording() {
+            let (w, h) = self.console_string_size(text);
+            if !super::hud_record::note(x, y, w, h) {
+                return x + w;
+            }
+        }
         let s = to_cstring(text);
         cl_eng!(pfnDrawSetTextColor(rgb[0], rgb[1], rgb[2]));
         cl_eng!(pfnDrawConsoleString(x, y, s.as_ptr().cast_mut()))
@@ -184,7 +219,9 @@ impl ClEngine {
 
     /// `pfnFillRGBA`: the single wrapper for it. The engine draws it additively.
     pub fn fill(&self, x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32) {
-        cl_eng!(pfnFillRGBA(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
+        if super::hud_record::note(x, y, w, h) {
+            cl_eng!(pfnFillRGBA(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
+        }
     }
 
     /// An alpha-blended fill, as the engine's VGUI surface draws panels and text: the single
@@ -199,7 +236,9 @@ impl ClEngine {
             self.f.pfnFillRGBABlend.is_some() && (found(c"host_ver") || found(c"m_rawinput"))
         });
         if has {
-            cl_eng!(pfnFillRGBABlend(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
+            if super::hud_record::note(x, y, w, h) {
+                cl_eng!(pfnFillRGBABlend(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
+            }
         } else {
             self.fill(x, y, w, h, rgb, a);
         }
@@ -209,6 +248,12 @@ impl ClEngine {
     /// `pfnDrawSetTextColor`, or in the engine's default text colour when `None` (the engine
     /// resets the colour after every string). Returns the x after the text.
     pub fn draw_console_bytes(&self, x: i32, y: i32, rgb: Option<[f32; 3]>, text: &[u8]) -> i32 {
+        if super::hud_record::recording() {
+            let (w, h) = self.console_bytes_size(text);
+            if !super::hud_record::note(x, y, w, h) {
+                return x + w;
+            }
+        }
         let s = std::ffi::CString::new(text.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap_or_default();
         if let Some(c) = rgb {
             cl_eng!(pfnDrawSetTextColor(c[0], c[1], c[2]));
@@ -266,6 +311,10 @@ impl ClEngine {
     }
     /// `pfnCenterPrint` on raw bytes (no UTF-8 conversion).
     pub fn center_print_bytes(&self, text: &[u8]) {
+        // The engine draws it later, somewhere it doesn't say: a dry run prints nothing.
+        if !super::hud_record::may_draw() {
+            return;
+        }
         let s = std::ffi::CString::new(text.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap_or_default();
         cl_eng!(pfnCenterPrint(s.as_ptr()));
     }

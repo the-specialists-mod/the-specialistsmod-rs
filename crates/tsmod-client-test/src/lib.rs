@@ -20,6 +20,13 @@
 //! `tsext_test_arm` makes `command_pre` block the port's `special` and `server_cmd_pre` watch or
 //! rewrite the `_special` it sends.
 //!
+//! Minor 2 (#306, #314): `tsext_test_hud hide|show` hides the health box and chat
+//! (`hud_set_hidden`) and checks at the next redraws that `hud_elements` still places the hidden
+//! health box; `tsext_test_menu take|bad|close|giveback` takes over the next `MOTD` (the server's
+//! answer to `motd`), checks `menu_reply`'s refusals and its answer, and gives a takeover back
+//! (`menu_shown` says 0) for the port to show; `+duck` must set `local::DUCKING`, and a killed
+//! player in view must leave `visible_players`.
+//!
 //! Under any name starting with `quiet` it is a minimal extension for the approval tests (issue
 //! #297): it loads, prints `quiet stub init` from `init`, and, installed as a package with a
 //! helper, starts that helper through `verified_spawn`. For a server's block (#302) it prints
@@ -33,8 +40,9 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_client_ext_api::{
-    AimInfo, ClientExt, ClientExtApi, CommandPre, EXISTS, GameEvent, INVALID, LoadInfo, LocalState, MINOR, MessagePre, NAME_LEN, OK,
-    PlayerScore, REFUSED, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, allow, button, event, hit, player, renderer, verdict,
+    AimInfo, ClientExt, ClientExtApi, CommandPre, EXISTS, GameEvent, HudElement, INVALID, LoadInfo, LocalState, MINOR, MessagePre,
+    NAME_LEN, NOT_FOUND, OK, PlayerScore, REFUSED, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, allow, button, event, hit, hud,
+    hud_flag, local, menu, menu_closed, player, renderer, verdict,
 };
 
 /// The key `cargo xtask client-plugins` presses with `ts_dev_key` (`K_AUX32`, unbound): the stub
@@ -42,7 +50,7 @@ use ts_client_ext_api::{
 pub const TEST_KEY: c_int = 238;
 
 /// The checks the stub reports, in order. xtask requires each to be `ok`.
-pub const CHECKS: [&str; 57] = [
+pub const CHECKS: [&str; 65] = [
     "load",
     "init",
     "add_command",
@@ -101,6 +109,15 @@ pub const CHECKS: [&str; 57] = [
     "command_protected",
     "command_block",
     "server_cmd_pre",
+    // Minor 2: dead players and ducking (#306), HUD control and menu takeover (#314).
+    "local_ducking",
+    "visible_players_dead",
+    "hud_set_hidden",
+    "hud_hidden_kept",
+    "hud_elements",
+    "menu_reply_refused",
+    "menu_reply",
+    "menu_given_back",
 ];
 
 /// What `tsext_test_arm <mode>` sets up for the port's `special` command and the `_special` it
@@ -144,6 +161,13 @@ struct State {
     messages_seen: u32,
     unreachable_seen: u32,
     broadcast_seen: bool,
+    /// Minor 2: commands with `+duck` held; a killed player to look for and the frames since;
+    /// redraws since the HUD was hidden; take over the next `MOTD`; give a takeover back.
+    duck_cmds: u32,
+    death_watch: Option<(c_int, u32)>,
+    hud_watch: Option<u32>,
+    take_motd: bool,
+    give_back: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -264,8 +288,9 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
     with(|s| s.id = info.id);
     let reserved_clear = t.reserved.iter().all(Option::is_none);
     let minor1 = t.claim_channel.is_some() && t.release.is_some();
-    check("load", t.minor == MINOR && reserved_clear && minor1, || {
-        format!("minor {} reserved clear {reserved_clear} minor 1 {minor1}", t.minor)
+    let minor2 = t.hud_set_hidden.is_some() && t.hud_elements.is_some() && t.menu_reply.is_some();
+    check("load", t.minor == MINOR && reserved_clear && minor1 && minor2, || {
+        format!("minor {} reserved clear {reserved_clear} minor 1 {minor1} minor 2 {minor2}", t.minor)
     });
     *out = ClientExt {
         name: c"tsmod_test (client stub)".as_ptr(),
@@ -287,6 +312,8 @@ pub unsafe extern "C" fn TSRS_ClientExtLoad(
         message_pre: Some(message_pre),
         command_pre: Some(command_pre),
         server_cmd_pre: Some(server_cmd_pre),
+        menu_shown: Some(menu_shown),
+        menu_closed: Some(menu_closed_cb),
         ..ClientExt::EMPTY
     };
     OK
@@ -387,6 +414,8 @@ extern "C" fn init() {
     unsafe {
         (a.add_command)(me, c"tsext_test_tsext".as_ptr(), cmd_tsext);
         (a.add_command)(me, c"tsext_test_arm".as_ptr(), cmd_arm);
+        (a.add_command)(me, c"tsext_test_hud".as_ptr(), cmd_hud);
+        (a.add_command)(me, c"tsext_test_menu".as_ptr(), cmd_menu);
     }
     let Some(claim) = a.claim_channel else { return };
     // SAFETY: a minor-1 table function, called with ids and NUL-terminated names.
@@ -418,6 +447,77 @@ extern "C" fn cmd_arm() {
         _ => Arm::None,
     };
     with(|s| s.arm = arm);
+}
+
+/// The first argument of the running command.
+fn arg1() -> String {
+    // SAFETY: `cmd_argv` returns a NUL-terminated string valid until the next command.
+    unsafe { CStr::from_ptr((api().cmd_argv)(1)) }.to_string_lossy().into_owned()
+}
+
+/// `tsext_test_hud hide|show` (minor 2): hides the health box and chat, or shows everything.
+extern "C" fn cmd_hud() {
+    let Some(set) = api().hud_set_hidden else { return };
+    if arg1() == "hide" {
+        // SAFETY: a minor-2 table function, called with this extension's id.
+        let (rc, bad) = unsafe { (set(id(), hud::bit(hud::HEALTH) | hud::bit(hud::CHAT)), set(id(), 1 << 40)) };
+        check("hud_set_hidden", rc == OK && bad == INVALID, || format!("{rc} {bad}"));
+        with(|s| s.hud_watch = Some(0));
+    } else {
+        // SAFETY: as above.
+        unsafe { set(id(), 0) };
+    }
+}
+
+/// The HUD elements (minor 2).
+fn hud_elements() -> Vec<HudElement> {
+    let Some(f) = api().hud_elements else { return Vec::new() };
+    let mut out = [HudElement::default(); 32];
+    // SAFETY: a minor-2 table function, called with room for `out.len()` elements.
+    let n = unsafe { f(out.as_mut_ptr(), out.len() as c_int) };
+    out[..(n.max(0) as usize).min(out.len())].to_vec()
+}
+
+/// A minor-2 `menu_reply`.
+fn reply(kind: c_int, choice: &CStr) -> c_int {
+    match api().menu_reply {
+        // SAFETY: a table function, called with this extension's id and a NUL-terminated choice.
+        Some(f) => unsafe { f(id(), kind, choice.as_ptr()) },
+        None => INVALID,
+    }
+}
+
+/// `tsext_test_menu take|bad|close|giveback` (minor 2): take over the next `MOTD`; the replies the
+/// port must refuse; close it; give it back to the port.
+extern "C" fn cmd_menu() {
+    match arg1().as_str() {
+        "take" => with(|s| s.take_motd = true),
+        "bad" => {
+            let (only_closes, no_text, no_kind) = (reply(menu::MOTD, c"1"), reply(menu::TEXT, c"1"), reply(99, c""));
+            check("menu_reply_refused", only_closes == INVALID && no_text == NOT_FOUND && no_kind == INVALID, || {
+                format!("{only_closes} {no_text} {no_kind}")
+            });
+        }
+        "close" => {
+            let (first, again) = (reply(menu::MOTD, c""), reply(menu::MOTD, c""));
+            check("menu_reply", first == OK && again == NOT_FOUND, || format!("{first} {again}"));
+        }
+        "giveback" => with(|s| s.give_back = true),
+        other => print(&format!("tsext_test_menu: {other}?")),
+    }
+}
+
+/// `menu_shown` (minor 2): it shows what it took over until `tsext_test_menu giveback`.
+extern "C" fn menu_shown(_kind: c_int) -> c_int {
+    (!with(|s| s.give_back)) as c_int
+}
+
+/// `menu_closed` (minor 2).
+extern "C" fn menu_closed_cb(kind: c_int, reason: c_int) {
+    print(&format!("menu {kind} closed: {reason}"));
+    if kind == menu::MOTD && reason == menu_closed::GIVEN_BACK && with(|s| std::mem::take(&mut s.give_back)) {
+        check("menu_given_back", true, String::new);
+    }
 }
 
 /// The minor-1 `release` (the table has it: `load` checks).
@@ -484,6 +584,10 @@ unsafe extern "C" fn message_pre(m: *const MessagePre, out: *mut u8, out_len: *m
     });
     if (name == c"TSHealth" || name == c"CurWeapon" || name == c"ScoreInfo") && m.allow == 0 && m.token == 0 {
         check("message_observe", true, String::new);
+    }
+    if name == c"MOTD" && with(|s| s.take_motd) && m.allow & allow::BLOCK != 0 {
+        // A takeover (minor 2); every chunk of it.
+        return verdict::BLOCK;
     }
     if name == c"SayText" && has(data, b"tsext_block_me") {
         check("message_block", m.allow & allow::BLOCK != 0, || format!("allow {}", m.allow));
@@ -595,6 +699,21 @@ extern "C" fn frame(_time: f64) {
         check("message_hold", first == OK, || format!("{first}"));
         check("release_again", again == ts_client_ext_api::NOT_FOUND, || format!("{again}"));
     }
+    // A player killed in view is out of `visible_players` while it dies (minor 2).
+    let look = with(|s| {
+        let (slot, frames) = s.death_watch.as_mut()?;
+        *frames += 1;
+        let slot = (*frames == 10).then_some(*slot)?;
+        s.death_watch = None;
+        Some(slot)
+    });
+    if let Some(slot) = look {
+        let mut vis = [VisiblePlayer::default(); 32];
+        // SAFETY: a table function, called with room for `vis.len()` players.
+        let n = unsafe { (api().visible_players)(vis.as_mut_ptr(), vis.len() as c_int) };
+        let listed = vis[..(n.max(0) as usize).min(32)].iter().any(|v| v.slot == slot);
+        check("visible_players_dead", !listed, || format!("player {slot} listed while dying"));
+    }
 }
 
 extern "C" fn redraw(_time: f32, _intermission: c_int) {
@@ -606,6 +725,18 @@ extern "C" fn redraw(_time: f32, _intermission: c_int) {
         s.redraws
     });
     check("redraw", n > 10, || format!("{n} redraws"));
+    // A few redraws after hiding: the hidden health box still says where it would draw.
+    let due = with(|s| {
+        let n = s.hud_watch.as_mut()?;
+        *n += 1;
+        (*n > 5).then(|| s.hud_watch.take())
+    });
+    if due.is_some() {
+        let list = hud_elements();
+        let health = list.get(hud::HEALTH as usize).copied().unwrap_or_default();
+        let want = hud_flag::HIDDEN | hud_flag::DRAWN | hud_flag::RECT;
+        check("hud_hidden_kept", health.flags & want == want && health.rect[2] > 0 && health.rect[3] > 0, || format!("{health:?}"));
+    }
 }
 
 unsafe extern "C" fn key_event(down: c_int, key: c_int, _binding: *const c_char) -> c_int {
@@ -639,6 +770,23 @@ extern "C" fn wants_cursor() -> c_int {
     0
 }
 
+/// `+duck` held long enough for the duck to finish: the local player is ducking (minor 2).
+fn note_duck(buttons: u32) {
+    if buttons & button::DUCK == 0 {
+        return;
+    }
+    let n = with(|s| {
+        s.duck_cmds += 1;
+        s.duck_cmds
+    });
+    if n >= 60 {
+        let mut ls = LocalState::default();
+        // SAFETY: a table function, called with a valid out-pointer.
+        let rc = unsafe { (api().local_state)(&mut ls) };
+        check("local_ducking", rc == OK && ls.flags & local::DUCKING != 0, || format!("{rc} flags {:#x}", ls.flags));
+    }
+}
+
 unsafe extern "C" fn usercmd(cmd: *const UserCmd) {
     if quiet() || cmd.is_null() {
         return;
@@ -653,6 +801,7 @@ unsafe extern "C" fn usercmd(cmd: *const UserCmd) {
     check("usercmd_attack", c.pressed & button::ATTACK != 0 && c.buttons & button::ATTACK != 0, || "no +attack edge".into());
     check("usercmd_use", c.pressed & button::USE != 0, || "no +use edge".into());
     check("usercmd_released", c.released & (button::ATTACK | button::USE) != 0, || "no release edge".into());
+    note_duck(c.buttons);
 }
 
 unsafe extern "C" fn game_event(e: *const GameEvent) {
@@ -667,6 +816,7 @@ unsafe extern "C" fn game_event(e: *const GameEvent) {
         event::SPAWN => check("event_spawn", true, String::new),
         event::HEALTH => check("event_health", e.a > 0, || format!("health {}", e.a)),
         event::WEAPON => check("event_weapon", e.a > 0 && !text.is_empty(), || format!("weapon {} {text:?}", e.a)),
+        event::DEATH if e.c == 0 && e.b > 0 => with(|s| s.death_watch = Some((e.b, 0))),
         event::DEATH => check("event_death", e.c == 1 && e.b > 0, || format!("death {} {} {}", e.a, e.b, e.c)),
         _ => {}
     }
@@ -814,6 +964,13 @@ fn queries() {
         (a.mouse_position)(&mut x, &mut y);
     }
     check("mouse", w > 0 && h > 0 && x >= 0 && y >= 0, || format!("{w}x{h} at {x},{y}"));
+
+    // Minor 2: every element, named; the health box (shown again) placed.
+    let list = hud_elements();
+    let named = list.iter().enumerate().all(|(i, e)| e.id == i as u32 && cstr_field(&e.name).as_bytes() == hud::NAMES[i].to_bytes());
+    let health = list.get(hud::HEALTH as usize).copied().unwrap_or_default();
+    let placed = health.flags & (hud_flag::RECT | hud_flag::HIDDEN) == hud_flag::RECT && health.rect[2] > 0;
+    check("hud_elements", list.len() == hud::COUNT as usize && named && placed, || format!("{} named {named} {health:?}", list.len()));
 }
 
 /// The data directory: under `cl_plugins_data/test/`, with a trailing separator, writable.

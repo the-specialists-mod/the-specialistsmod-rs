@@ -31,7 +31,25 @@
 //!   Minor 1 added the `TSExt` channel messages (issue #294) and the interception hooks
 //!   `message_pre`, `command_pre`, `server_cmd_pre` with [`ClientExtApi::release`] (issue #295).
 //!   Minor 2 added [`local::DUCKING`], dropped dead players from `visible_players` and saves the
-//!   GLES state around `redraw` (issue #306).
+//!   GLES state around `redraw` (issue #306), and HUD control and menu takeover (issue #314).
+//!
+//! # HUD control and menus (minor 2)
+//! * **Hiding** ([`ClientExtApi::hud_set_hidden`]): each extension has its own mask of [`hud`]
+//!   elements; an element is hidden while any extension that isn't suspended hides it. A hidden
+//!   element only stops drawing: the port keeps its state (and keeps working out where it would
+//!   draw, [`ClientExtApi::hud_elements`]), so showing it again shows it as it would be now.
+//!   Suspension shows an extension's elements again.
+//! * **Takeover:** a [`verdict::BLOCK`] on a `ShowMenu`, `VGUIMenu` (the team menu, the map
+//!   briefing, the MOTD window) or `MOTD` takes the menu over: the port doesn't show it, and the
+//!   extension that blocked it may answer it once with [`ClientExtApi::menu_reply`], which sends
+//!   exactly what the port's menu would have (`menuselect N`, `jointeam N`), and only a choice
+//!   the menu offered. The takeover ends when it is answered, when a newer menu of its kind comes,
+//!   when the server closes it (a `ShowMenu` without keys), when its time runs out (`ShowMenu`'s
+//!   display time), on `ResetHUD` and when the connection ends ([`ClientExt::menu_closed`]).
+//! * **Fail open:** a taken-over menu comes back as the port's own when its extension is
+//!   suspended, or when its [`ClientExt::menu_shown`] (asked every frame) says it no longer shows
+//!   it (its page closed or crashed). An extension without `menu_shown` (built for minor 1) is
+//!   never asked: its block stays a block, as in minor 1, until it is suspended.
 //!
 //! # Interception (minor 1)
 //! * **What reaches the hooks:** `message_pre` gets every user message of TS 3.0's the port hooks
@@ -84,16 +102,18 @@ pub const VERSION: u32 = 1;
 /// interception hooks ([`ClientExt::message_pre`], [`ClientExt::command_pre`],
 /// [`ClientExt::server_cmd_pre`], [`ClientExtApi::release`]).
 /// 2: [`local::DUCKING`], dead players left out of [`ClientExtApi::visible_players`], GLES state
-/// saved around [`ClientExt::redraw`] (issue #306).
+/// saved around [`ClientExt::redraw`] (issue #306); HUD control ([`ClientExtApi::hud_set_hidden`],
+/// [`ClientExtApi::hud_elements`]) and menu takeover ([`ClientExtApi::menu_reply`],
+/// [`ClientExt::menu_shown`], [`ClientExt::menu_closed`]) (issue #314).
 pub const MINOR: u32 = 2;
 /// The entry point every client extension exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_ClientExtLoad";
 /// The prefix of the libraries the client loads from `cl_dlls/`.
 pub const LIBRARY_PREFIX: &str = "tsmod_";
 /// The number of [`ClientExtApi::reserved`] slots.
-pub const API_RESERVED: usize = 30;
+pub const API_RESERVED: usize = 27;
 /// The number of [`ClientExt::reserved`] slots.
-pub const EXT_RESERVED: usize = 12;
+pub const EXT_RESERVED: usize = 10;
 
 /// The file name suffix of an extension library for a platform and architecture, the same as the
 /// server's `tsmod_*` plugins: `.dll`, `_amd64.dll`, `_i386.so`, `_amd64.so`. (The client library
@@ -234,6 +254,14 @@ pub struct ClientExt {
     /// break, or it counts as a block.
     pub server_cmd_pre: Option<unsafe extern "C" fn(cmd: *const CommandPre, out: *mut c_char, out_cap: c_int) -> c_int>,
 
+    // ---- minor 2: menu takeover (issue #314) -----------------------------------------------------
+    /// Asked once a frame while this extension holds an open takeover of a [`menu`] kind (see the
+    /// crate docs): non-zero while it still shows the menu to the player; 0 gives it back, and the
+    /// port shows its own menu (fail open). Without it the port never asks.
+    pub menu_shown: Option<extern "C" fn(kind: c_int) -> c_int>,
+    /// A takeover of this extension's ended without its answer: `reason` a [`menu_closed`] code.
+    pub menu_closed: Option<extern "C" fn(kind: c_int, reason: c_int)>,
+
     /// Callbacks a later [`MINOR`] defines; leave them NULL.
     pub reserved: [Reserved; EXT_RESERVED],
 }
@@ -262,6 +290,8 @@ impl ClientExt {
         message_pre: None,
         command_pre: None,
         server_cmd_pre: None,
+        menu_shown: None,
+        menu_closed: None,
         reserved: [None; EXT_RESERVED],
     };
 }
@@ -567,6 +597,142 @@ pub mod renderer {
     pub const GLES: c_int = 2;
 }
 
+/// The port's HUD elements ([`ClientExtApi::hud_set_hidden`], [`HudElement::id`]): ids, in the
+/// webview spec's order (its §7.9 names, [`hud::NAMES`]).
+pub mod hud {
+    use core::ffi::CStr;
+    /// The health box: the stance figure, health, the team bar.
+    pub const HEALTH: u32 = 0;
+    /// The kevlar icon and number.
+    pub const ARMOUR: u32 = 1;
+    /// The weapon in hand's name, clip and reserve.
+    pub const AMMO: u32 = 2;
+    /// The weapon list (slot selection).
+    pub const WEAPON_SELECT: u32 = 3;
+    /// The crosshair (or the bomb's wire panel), and the name of the player under it.
+    pub const CROSSHAIR: u32 = 4;
+    /// The kill feed (`DeathMsg`).
+    pub const KILLFEED: u32 = 5;
+    /// Chat (`SayText`).
+    pub const CHAT: u32 = 6;
+    /// TS's timed messages (`TSMessage`, the buy menu's notices).
+    pub const NOTIFY: u32 = 7;
+    /// Centre prints (`TextMsg` to the centre). The engine draws them: while hidden, new ones
+    /// aren't printed, and no rectangle is known.
+    pub const CENTRE: u32 = 8;
+    /// HUD text (`HudText`, titles: the `CHudMessage` element).
+    pub const HUDTEXT: u32 = 9;
+    /// The round timer.
+    pub const TIMER: u32 = 10;
+    /// The free slots and credits boxes.
+    pub const CASH: u32 = 11;
+    /// The kung fu power label and bar, and the kung fu icon.
+    pub const KUNGFU: u32 = 12;
+    /// The stunt (movement) icon and the stunt cooldown steps.
+    pub const STUNT: u32 = 13;
+    /// The power-up name and time, and the slow-motion icon.
+    pub const POWERUP: u32 = 14;
+    /// The flag panel and the objective markers.
+    pub const OBJECTIVE: u32 = 15;
+    /// Pickup notices: TS 3.0 draws none, so hiding it changes nothing.
+    pub const PICKUPS: u32 = 16;
+    /// The status icons (`StatusIcon`).
+    pub const STATUS_ICONS: u32 = 17;
+    /// The spectator panel and the HLTV name tags.
+    pub const SPECTATOR: u32 = 18;
+    /// The scoreboard.
+    pub const SCOREBOARD: u32 = 19;
+    /// How many there are.
+    pub const COUNT: u32 = 20;
+    /// Each element's name, by id.
+    pub const NAMES: [&CStr; COUNT as usize] = [
+        c"health",
+        c"armour",
+        c"ammo",
+        c"weapon_select",
+        c"crosshair",
+        c"killfeed",
+        c"chat",
+        c"notify",
+        c"centre",
+        c"hudtext",
+        c"timer",
+        c"cash",
+        c"kungfu",
+        c"stunt",
+        c"powerup",
+        c"objective",
+        c"pickups",
+        c"status_icons",
+        c"spectator",
+        c"scoreboard",
+    ];
+    /// Element `id`'s bit in a [`hud_set_hidden`](super::ClientExtApi::hud_set_hidden) mask.
+    pub const fn bit(id: u32) -> u64 {
+        1 << id
+    }
+    /// Every element.
+    pub const ALL: u64 = (1 << COUNT) - 1;
+}
+
+/// [`HudElement::flags`].
+pub mod hud_flag {
+    /// Hidden (by any extension that isn't suspended).
+    pub const HIDDEN: u32 = 1;
+    /// It drew at the last HUD redraw (or would have, if hidden).
+    pub const DRAWN: u32 = 2;
+    /// [`HudElement::rect`](super::HudElement::rect) is known: where it last drew.
+    pub const RECT: u32 = 4;
+}
+
+/// Bytes of [`HudElement::name`], the NUL included.
+pub const HUD_NAME_LEN: usize = 16;
+
+/// A HUD element ([`ClientExtApi::hud_elements`]).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HudElement {
+    /// A [`hud`] id.
+    pub id: u32,
+    /// [`hud_flag`] bits.
+    pub flags: u32,
+    /// Where it last drew, screen pixels: x, y, width, height (with [`hud_flag::RECT`]; zero
+    /// otherwise). The bounds of everything it drew, kept while it is hidden or draws nothing.
+    pub rect: [c_int; 4],
+    /// [`hud::NAMES`], NUL-terminated.
+    pub name: [c_char; HUD_NAME_LEN],
+}
+
+impl Default for HudElement {
+    fn default() -> Self {
+        HudElement { id: 0, flags: 0, rect: [0; 4], name: [0; HUD_NAME_LEN] }
+    }
+}
+
+/// The kinds of menu an extension can take over ([`ClientExtApi::menu_reply`]).
+pub mod menu {
+    use core::ffi::c_int;
+    /// A text menu (`ShowMenu`).
+    pub const TEXT: c_int = 1;
+    /// A VGUI menu (`VGUIMenu`): the team menu (2), the map briefing (4), the MOTD window (5).
+    pub const VGUI: c_int = 2;
+    /// The message of the day (`MOTD`).
+    pub const MOTD: c_int = 3;
+}
+
+/// [`ClientExt::menu_closed`] reasons.
+pub mod menu_closed {
+    use core::ffi::c_int;
+    /// The server closed it (a `ShowMenu` without keys) or its display time ran out.
+    pub const EXPIRED: c_int = 1;
+    /// A newer menu of its kind came.
+    pub const REPLACED: c_int = 2;
+    /// `ResetHUD` (a spawn), or the connection ended.
+    pub const RESET: c_int = 3;
+    /// Its `menu_shown` gave it back: the port shows its own menu.
+    pub const GIVEN_BACK: c_int = 4;
+}
+
 /// The functions the client offers. Every entry is non-NULL except [`Self::reserved`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -662,6 +828,21 @@ pub struct ClientExtApi {
     /// [`MESSAGE_MAX`]).
     pub release: Option<unsafe extern "C" fn(ext: ExtId, token: u32, verdict: c_int, data: *const u8, len: c_int) -> c_int>,
 
+    // ---- minor 2 (NULL in an older client: check `minor` first) ---------------------------------
+    /// Sets the [`hud`] elements this extension hides (`mask` of [`hud::bit`]s; 0 shows them
+    /// all): [`OK`], [`SUSPENDED`], or [`INVALID`] (a bit past [`hud::COUNT`]; nothing changed).
+    pub hud_set_hidden: Option<unsafe extern "C" fn(ext: ExtId, mask: u64) -> c_int>,
+    /// Every [`hud`] element ([`HudElement`]), by id, into `out` (room for `max`): how many there
+    /// are ([`hud::COUNT`]).
+    pub hud_elements: Option<unsafe extern "C" fn(out: *mut HudElement, max: c_int) -> c_int>,
+    /// Answers the menu of [`menu`] kind `kind` this extension took over, as the port's menu
+    /// would: `choice` a key of a text menu (`"1"`..`"10"`, one the menu offers: `menuselect N`),
+    /// a team of the team menu (`"1"`.. one it lists, or `"5"` auto-assign: `jointeam N`), or `""`
+    /// (or NULL) to close it unanswered (Esc, cancel, the MOTD's OK). [`OK`] (the takeover ends),
+    /// [`NOT_FOUND`] (no open takeover of that kind of this extension's, or its text isn't all
+    /// here yet), [`INVALID`] (a choice the menu doesn't offer, or another kind) or [`SUSPENDED`].
+    pub menu_reply: Option<unsafe extern "C" fn(ext: ExtId, kind: c_int, choice: *const c_char) -> c_int>,
+
     /// Functions a later [`MINOR`] defines; NULL here. Check [`Self::minor`] first.
     pub reserved: [Reserved; API_RESERVED],
 }
@@ -676,11 +857,12 @@ mod tests {
     fn sizes_are_pinned() {
         let p = size_of::<usize>();
         // Minor 0's sizes: 13 callbacks + 16 reserved, 29 functions + 32 reserved. Minor 1 named
-        // 4 and 2 of the reserved slots.
+        // 4 and 2 of the reserved slots, minor 2 another 2 and 3.
         assert_eq!(size_of::<ClientExt>(), 8 + 2 * p + (13 + 16) * p);
-        assert_eq!(size_of::<ClientExt>(), 8 + 2 * p + (13 + 4 + EXT_RESERVED) * p);
+        assert_eq!(size_of::<ClientExt>(), 8 + 2 * p + (13 + 4 + 2 + EXT_RESERVED) * p);
         assert_eq!(size_of::<ClientExtApi>(), 12usize.next_multiple_of(p) + (29 + 32) * p);
-        assert_eq!(size_of::<ClientExtApi>(), 12usize.next_multiple_of(p) + (29 + 2 + API_RESERVED) * p);
+        assert_eq!(size_of::<ClientExtApi>(), 12usize.next_multiple_of(p) + (29 + 2 + 3 + API_RESERVED) * p);
+        assert_eq!(size_of::<HudElement>(), 8 + 16 + HUD_NAME_LEN);
         assert_eq!(size_of::<MessagePre>(), (2 * p + 12).next_multiple_of(p));
         assert_eq!(size_of::<CommandPre>(), 4 * p);
         assert_eq!(size_of::<UserCmd>(), 4 * 3 + 4 * 3 + 4 * 3 + 4 * 3);
@@ -697,5 +879,22 @@ mod tests {
         assert_eq!(library_suffix(false, false), "_i386.so");
         assert_eq!(library_suffix(false, true), "_amd64.so");
         assert_eq!(ClientExt::EMPTY.size as usize, size_of::<ClientExt>());
+    }
+
+    /// Minor 1's named slots keep their offsets: minor 2's come after them, out of the reserved
+    /// slots, so an extension built for minor 1 reads the same table.
+    #[test]
+    fn minor_slots_are_appended() {
+        let p = size_of::<usize>();
+        assert_eq!(core::mem::offset_of!(ClientExt, menu_shown), core::mem::offset_of!(ClientExt, server_cmd_pre) + p);
+        assert_eq!(core::mem::offset_of!(ClientExt, reserved), core::mem::offset_of!(ClientExt, menu_closed) + p);
+        assert_eq!(core::mem::offset_of!(ClientExtApi, hud_set_hidden), core::mem::offset_of!(ClientExtApi, release) + p);
+        assert_eq!(core::mem::offset_of!(ClientExtApi, reserved), core::mem::offset_of!(ClientExtApi, menu_reply) + p);
+    }
+
+    #[test]
+    fn hud_names_fit() {
+        assert!(hud::NAMES.iter().all(|n| n.to_bytes_with_nul().len() <= HUD_NAME_LEN));
+        assert_eq!(hud::ALL.count_ones(), hud::COUNT);
     }
 }

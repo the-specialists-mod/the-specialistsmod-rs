@@ -249,26 +249,29 @@ pub fn draw(dc: &Dc, nohud: bool) {
         return;
     }
     let buy_open = crate::menus::buy_open();
+    // Port addition: the client extensions' HUD control (issue #314, `super::elements`).
+    use super::elements::draw as element;
+    use ts_client_ext_api::hud as el;
     super::with(|h| {
         let style = crate::gameplay::hud_rules(h.gameplay).slot_menu();
         if style.closed_list {
             let demo = engine().demo_playing();
-            draw_weapon_list(dc, h, !h.menu_open || demo, true);
+            element(el::WEAPON_SELECT, || draw_weapon_list(dc, h, !h.menu_open || demo, true));
         } else if h.menu_open {
-            draw_weapon_list(dc, h, false, style.clip_info);
+            element(el::WEAPON_SELECT, || draw_weapon_list(dc, h, false, style.clip_info));
         }
         if h.weapon == 0 {
-            draw_kungfu_label(dc, h);
+            element(el::KUNGFU, || draw_kungfu_label(dc, h));
         } else {
-            draw_weapon_info(dc, h);
+            element(el::AMMO, || draw_weapon_info(dc, h));
         }
         if buy_open {
             return;
         }
         if h.wires.iter().any(|&w| w != 0) {
-            draw_wire_panel(dc, h);
+            element(el::CROSSHAIR, || draw_wire_panel(dc, h));
         } else {
-            draw_crosshair(dc, h);
+            element(el::CROSSHAIR, || draw_crosshair(dc, h));
         }
     });
 }
@@ -610,7 +613,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     let (cx, cy) = crosshair_centre(dc);
     let divesteps = parts.divesteps && !scoped;
     if divesteps && !parts.divesteps_last {
-        draw_divesteps(dc, h, cx, cy);
+        // Its own element, though the crosshair draws it (issue #314).
+        super::elements::draw(ts_client_ext_api::hud::STUNT, || draw_divesteps(dc, h, cx, cy));
     }
     if !parts.crosshair {
         return;
@@ -656,7 +660,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
         dc.number(cx + 28, y, num::DRAW_ZERO, range, scaled(rgb, k));
     }
     if divesteps && parts.divesteps_last {
-        draw_divesteps(dc, h, cx, cy);
+        // Its own element, though the crosshair draws it (issue #314).
+        super::elements::draw(ts_client_ext_api::hud::STUNT, || draw_divesteps(dc, h, cx, cy));
     }
 }
 
