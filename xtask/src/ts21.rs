@@ -345,14 +345,15 @@ fn run_scenes(s: &mut Server, c: &mut Vec<(String, bool)>) {
         measured >= 2 && moved + 1 >= measured,
     ));
 
-    // 2. rcon mid-map: 3.0 and back, one reload each.
+    // 2. rcon mid-map: 3.0 and back, one reload each. 60 s: a Wine root's reload with four bots
+    // rejoining took over 40 s while all seven roots ran at once.
     let t = s.time();
     s.rcon("ts_gameplay 30");
-    let to30 = s.wait_new_map(t, 40, |st| st.players.len() >= BOTS && st.players.iter().all(|p| p.gp == "30"));
+    let to30 = s.wait_new_map(t, 60, |st| st.players.len() >= BOTS && st.players.iter().all(|p| p.gp == "30"));
     c.push(("rcon ts_gameplay 30 reloads ts_dojo under 3.0 (every player gp=30)".into(), to30.is_some()));
     let t = s.time();
     s.rcon("ts_gameplay 21");
-    let to21 = s.wait_new_map(t, 40, |st| st.players.len() >= BOTS && st.players.iter().all(|p| p.gp == "21"));
+    let to21 = s.wait_new_map(t, 60, |st| st.players.len() >= BOTS && st.players.iter().all(|p| p.gp == "21"));
     c.push(("rcon ts_gameplay 21 reloads ts_dojo under 2.1 (every player gp=21)".into(), to21.is_some()));
     sleep(4);
     let settled = s.time();

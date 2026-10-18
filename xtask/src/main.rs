@@ -114,6 +114,9 @@ fn main() {
     };
     let Some(cmd) = (!args.is_empty()).then(|| args.remove(0)) else { usage() };
     let ctx = Ctx { profile, repo: repo_root() };
+    if launches_games(&cmd) {
+        require_display();
+    }
     match cmd.as_str() {
         "build" => ctx.build(&Target::ALL),
         "lint" => {
@@ -966,9 +969,11 @@ fn gameplay_switch_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)], map
     let (before, kept_dump) = (dump("before switch"), dump("kept"));
     let kept = before.iter().any(|p| p.frags != 0 || p.deaths != 0)
         && before.iter().all(|p| kept_dump.iter().any(|q| q.idx == p.idx && q.frags >= p.frags && q.deaths >= p.deaths));
-    let bots21 = dump("map 21").iter().filter(|p| p.idx != 1 && p.state == "alive").count();
+    // Bots playing the 2.1 map: alive at the dump, or already scored or died on it (the reload
+    // zeroes the scores). One snapshot alone missed bots waiting to respawn (2 of 4 on fwgs-win).
+    let bots21 = dump("map 21").iter().filter(|p| p.idx != 1 && (p.state == "alive" || p.frags != 0 || p.deaths != 0)).count();
     let reloads = |part: &str| part.matches(": reloading ").count();
-    say!("   gameplay reload: scores kept with no change {kept}; bots alive on the 2.1 map {bots21}");
+    say!("   gameplay reload: scores kept with no change {kept}; bots playing the 2.1 map {bots21}");
     vec![
         (
             "ts_gameplay 21 and back at once, ts_bot_backend NATIVE: no reload, the map keeps running 3.0 (gp 30, scores kept)",
@@ -1121,6 +1126,34 @@ struct PlayerStatus {
     /// Physinfo `gp`: the gameplay ruleset the player moves by (empty before its first spawn).
     gp: String,
     org: [f32; 3],
+}
+
+/// The commands that start game clients or Wine servers by default (`server` runs one chosen
+/// root, often a Linux one that needs no display; `relaunch` checks for itself: `--xvfb`).
+fn launches_games(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "test" | "meck" | "bots" | "plugins" | "client-plugins" | "ts21" | "version" | "tspkg" | "play" | "all" | "client" | "steam"
+    )
+}
+
+/// Without `DISPLAY` or `WAYLAND_DISPLAY` (an agent's shell, ssh), FWGS runs as a dedicated server
+/// (`SDL_Init failed`, `Unknown command "connect"`) and Wine's `hlds.exe` dies reading its console
+/// (`CTextConsoleWin32::GetLine`), so every client check fails late and looks like a code bug
+/// (docs/validation.md, troubleshooting). Stop at once instead.
+fn require_display() {
+    if cfg!(target_os = "linux") && !has_display(env::var_os("DISPLAY"), env::var_os("WAYLAND_DISPLAY")) {
+        eprintln!(
+            "xtask: no DISPLAY or WAYLAND_DISPLAY: the games need a display. Start an Xvfb \
+             (`Xvfb :87 -screen 0 1280x800x24`) and run with `DISPLAY=:87 SDL_VIDEODRIVER=x11` \
+             (docs/validation.md)."
+        );
+        exit(2);
+    }
+}
+
+fn has_display(x11: Option<std::ffi::OsString>, wayland: Option<std::ffi::OsString>) -> bool {
+    [x11, wayland].into_iter().flatten().any(|v| !v.is_empty())
 }
 
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -1652,6 +1685,14 @@ fn copy_dir(from: &Path, to: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_needed_for_game_commands() {
+        let v = |s: &str| Some(std::ffi::OsString::from(s));
+        assert!(!has_display(None, None) && !has_display(v(""), v("")));
+        assert!(has_display(v(":87"), None) && has_display(None, v("wayland-1")));
+        assert!(launches_games("all") && launches_games("ts21") && !launches_games("lint") && !launches_games("relaunch"));
+    }
 
     #[test]
     fn parses_ts_status_lines() {
