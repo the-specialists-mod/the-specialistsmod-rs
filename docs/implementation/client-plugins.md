@@ -1,6 +1,8 @@
 # Client plugins: packages, downloads and approval
 
-Status: draft specification, 2026-10-17. Nothing here is built yet.
+Status: draft specification, 2026-10-17. The pure parts (§3, §5, §10: packages, manifests,
+signatures, the store and verification) are built in `crates/plugin-pkg` (issue #296); the
+loader, the offers and the cards aren't built yet.
 
 The client library has no plugin loading today. The server loads `tsmod_*` libraries from
 `dlls/` ([plugin-api.md](plugin-api.md) §1.2), but nothing equivalent exists on the client. This
@@ -70,10 +72,19 @@ A package is a zip file named `<id>-<version>.tspkg`, holding:
 
 ```
 manifest.toml
-manifest.sig          ed25519 signature of manifest.toml's exact bytes (absent when unsigned)
+manifest.sig          ed25519 signature of manifest.toml's exact bytes: the raw 64 bytes
+                      (absent when unsigned)
+publisher.cert        the countersignature (§3.3; optional, only with manifest.sig)
 files/...             the plugin's files, paths as in the manifest
 ```
 
+* **Zip rules:** nothing else may be in the zip. Directory entries are allowed only for the
+  directories of listed files (`zip -r` writes them). Entries must be stored or deflated, not
+  encrypted, and not symlinks or other special files. No two names may be equal ignoring case,
+  and every local header must match the central directory (a zip can otherwise hide a second
+  copy of a name). The zip's own file modes are ignored: unpacking makes only `declares.processes`
+  executable (on Linux). Sizes are enforced while reading, so an entry can't inflate past its
+  manifest size.
 * The manifest and its signature are also served next to the package, as
   `<id>-<version>.manifest.toml` and `.manifest.sig`, so the client can show details before it
   downloads anything (§6.2).
@@ -86,15 +97,18 @@ files/...             the plugin's files, paths as in the manifest
 format = 1
 id = "webview"                     # [a-z0-9_-]{1,32}; the library is tsmod_<id><suffix>
 name = "Web overlay"
-version = "0.1.0"                  # semver
+version = "0.1.0"                  # semver, at most 16 characters (TSPkg's limit, §6.2)
 description = "A Chromium overlay that servers and the player can open."
 homepage = "https://github.com/the-specialists-mod/tsmod-plugin-webview-rs"
 license = "MIT"
 client_ext_api = 1                 # the extension API version it was built for (exact)
 
-[publisher]
+[publisher]                         # optional for unsigned packages
 name = "The Specialists Mod"
-key = "ed25519:BASE64..."          # the key manifest.sig verifies with
+key = "ed25519:BASE64..."          # the key manifest.sig verifies with (standard base64, 32 bytes)
+
+[requires]                          # optional
+port = ">=3.0.8, <3.1"             # semver requirement on the port client's version (§13.5)
 
 [platforms]                         # the library to load per client platform
 linux-i686    = "lib/linux-i686/tsmod_webview.so"
@@ -118,7 +132,20 @@ platform = "linux-x86_64"           # optional: only installed on that platform
 * **Every file is listed.** A file in `files/` without an entry, or an entry without a file,
   rejects the package.
 * **Paths** are relative, use `/`, and may not contain `..`, a drive letter, or a leading `/`.
-  Symlinks and other special zip entries reject the package.
+  Symlinks and other special zip entries reject the package. So that a path names the same
+  file on Linux and Windows, the full rules (`plugin_pkg::path`) are also: printable ASCII
+  without `\ : * ? " < > |`, at most 160 bytes, no empty or `.` segments, no segment ending in
+  `.` or a space, no Windows device names (`CON`, `nul.txt`, `COM1`...), no two paths equal
+  ignoring case, and no path that is also another's directory. The same rules apply to the
+  store's paths and to a `.files` list (§5.3), on unpacking and at every verification.
+* **Strict parsing:** `format` must be 1, unknown keys are refused (a new key needs a new
+  `format`), and the platform libraries and `declares.processes` must all be in `files` (a
+  platform's library installed on that platform).
+  Names and descriptions may not hold control or bidirectional-override characters, since the
+  cards show them; `homepage` must be `http(s)://`. At most 64 KB of manifest and 4 GiB of
+  files per platform.
+* **`[requires] port`** is read and kept by `plugin-pkg`. The loader enforces it: a plugin whose
+  requirement the running port doesn't meet is skipped at start with the reason (§13.5).
 * **Platforms:** a package that has no library for the client's platform is reported as
   `unsupported` (§6.5) and is never offered to the player.
 
@@ -126,14 +153,28 @@ platform = "linux-x86_64"           # optional: only installed on that platform
 
 | Level | Meaning | Shown as |
 |---|---|---|
-| **Verified** | `manifest.sig` checks against `publisher.key`, and that key is countersigned by a key built into the port (the-specialists-mod's release key; the list is `crates/client/src/plugins/trust.rs`) | "Verified publisher: The Specialists Mod" |
+| **Verified** | `manifest.sig` checks against `publisher.key`, and that key is countersigned by a key built into the port (the-specialists-mod's release key; the list is `plugin_pkg::BUILTIN_ROOTS`, `crates/plugin-pkg/src/trust.rs`, so the client and the launcher share it) | "Verified publisher: The Specialists Mod" |
 | **Known publisher** | the signature checks, and the player has approved a plugin with this key before | "Signed by <name>, approved before on <date>" |
 | **New publisher** | the signature checks, the key is new | "Signed by an unknown publisher" plus the key's fingerprint |
 | **Unsigned** | no `manifest.sig`, or a library dropped in with no manifest (§5.3) | red: "Unsigned: nobody vouches for this file" |
 
 * Countersignatures ship as `publisher.cert` next to `manifest.sig`, signed by a built-in key.
+  It's TOML: `format = 1`, `key` and `name` (the publisher key and name, which must equal the
+  manifest's), `signer` (the built-in key) and `signature` (base64 of an ed25519 signature over
+  `"tsmod publisher.cert v1\n"`, the key's 32 bytes and the name's UTF-8). The name is bound, so
+  "Verified publisher: <name>" always shows the countersigned name.
+* **Checking:** signatures are checked strictly (`verify_strict`: no malleable signatures, no
+  weak keys). A `manifest.sig` that fails, a signature without `publisher.key`, a malformed
+  `publisher.cert`, one for another key or name, one without `manifest.sig`, and one whose
+  built-in signer's signature fails all reject the package: a broken signature is never shown
+  as "unsigned". A `publisher.cert` from a key that isn't built in is ignored (signed, not
+  verified), so retiring a root key doesn't break old packages.
+* The **fingerprint** is the first 16 bytes of the key's SHA-256, as 8 groups of 4 hex digits.
+* Until the countersigning key exists (open question 4) the built-in list is empty, and no
+  package is "verified".
 * **Key changes:** a plugin id that was approved under one key and now comes with another is
-  treated as a different plugin, with a warning that the publisher changed.
+  treated as a different plugin, with a warning that the publisher changed. Signed and unsigned
+  count as different keys. A "Never" is per key too: blocking an id blocks it from that key only.
 * **Unsigned code:** unsigned packages from servers are refused unless the player has set
   `cl_plugins_allow_unsigned 1`. Hand-installed unsigned libraries can still be approved through
   the start-up prompt, with the red warning (that's how developers work, §11).
@@ -142,11 +183,17 @@ platform = "linux-x86_64"           # optional: only installed on that platform
 
 ```
 ts/cl_plugins/approved.toml                 the approval store (§5)
-ts/cl_plugins/<id>/<version>/               an installed package: manifest.toml, manifest.sig, files
+ts/cl_plugins/<id>/<version>/               an installed package, laid out as in the zip: manifest.toml,
+                                            manifest.sig, publisher.cert, files/... (this platform's)
 ts/cl_plugins/staging/                      downloads in progress; never loaded
 ts/cl_plugins_data/<id>/                    the plugin's own writable data (caches, profiles, settings)
 ts/cl_dlls/tsmod_<name><suffix>             hand-installed libraries without a package (§5.3)
 ```
+
+* **Unpacking** writes to a hidden `cl_plugins/<id>/.<version>.partial/`, which is renamed into
+  place, then lists and re-hashes the result, which must match the manifest exactly. Any
+  failure removes everything. Directories whose names start with `.`, and `staging/`, are never
+  candidates.
 
 * A plugin must write only to its data directory, never to its package directory. Writing there
   changes a hash and triggers a prompt at the next start, so this is self-enforcing.
@@ -168,24 +215,32 @@ scope = "always"                  # always | server
 servers = ["203.0.113.5:27015"]   # for scope = "server"
 source = "server 203.0.113.5:27015"   # or "launcher", "manual"
 publisher_key = "ed25519:BASE64..."   # absent for unsigned
-trust = "verified"                # as shown at approval time (§3.3)
+trust = "verified"                # verified | known | new | unsigned, as shown at approval (§3.3)
 approved_at = "2026-10-17T10:42:00Z"
-manifest_sha256 = "41ab..."
+manifest_sha256 = "41ab..."       # absent for hand-installed libraries
 platform = "linux-x86_64"
 
-[plugin.files]                    # every file of the installed package, for this platform
-"manifest.toml" = "41ab..."
-"lib/linux-x86_64/tsmod_webview.so" = "9f2c..."
-"bin/tsmod-webview-host" = "77d0..."
+[plugin.files]                    # every file of the installed package, for this platform,
+"manifest.toml" = "41ab..."       # relative to cl_plugins/<id>/<version>/
+"manifest.sig" = "0c5e..."
+"files/lib/linux-x86_64/tsmod_webview.so" = "9f2c..."
+"files/bin/tsmod-webview-host" = "77d0..."
 # ... every other file
 ```
 
 * The store is written only by the approval dialogs (§7) and the launcher. Nothing a server
   sends can write it.
+* A hand-installed library's entry has `id = "manual:<name>"`, `version = "0.0.0"`, and paths
+  relative to `cl_dlls/`.
+* Approving replaces every other entry for the same id and platform (one active version, §4).
+  "Never" everywhere does too; "Never from this server" adds a `state = "blocked"`,
+  `scope = "server"` entry beside them.
 * `state = "blocked"` remembers a "Never" choice, so the plugin isn't offered or prompted for
   again. `cl_plugins_menu` (§10) can undo it.
 * The store is written atomically (write to a temporary file, then rename). A store that fails
-  to parse is set aside as `approved.toml.bad`, and every plugin is prompted for again.
+  to parse is set aside as `approved.toml.bad`, and every plugin is prompted for again. That
+  includes a store with another `format`, an unknown key, a bad id, or a file path that breaks
+  the path rules (§3.2).
 
 ### 5.2 Verification at every start
 
@@ -206,6 +261,19 @@ At `Initialize`, before any plugin is mapped:
    * the manifest changed;
    * a different version or key;
    * a plugin seen for the first time.
+5. Some findings mean the plugin **can't be approved as it is**, and the prompt shows them
+   without "Allow" (only "Not now" and "Never"); reinstalling the package is the way out:
+   * installed files that disagree with the package's own manifest (a changed, missing or extra
+     file under the package directory, with no new signed manifest to vouch for it);
+   * a symlink or other special file in the package directory, or an unreadable file;
+   * a signature that no longer checks (§3.3);
+   * a manifest that is missing, doesn't parse, or names another id or version than its
+     directory;
+   * no library for this platform.
+
+   Approving such files would record hashes nobody signed, so a tampered install could be
+   approved with one click. A hand-installed library (§5.3) has no manifest, so its changes
+   are always approvable, except a `.files` list naming a file that isn't there.
 
 * **Time budget:** SHA-256 runs at about 1–2 GB/s per core with SHA extensions. The webview
   package (about 300 MB unpacked, mostly CEF) takes about 0.2 s on four threads. The port logs
@@ -222,8 +290,14 @@ At `Initialize`, before any plugin is mapped:
 ### 5.3 Hand-installed libraries
 
 A `cl_dlls/tsmod_<name><suffix>` with no package is treated as a one-file unsigned plugin:
-- **id:** `manual:<name>`
+- **id:** `manual:<name>`; `<name>` must be `[a-z0-9_-]{1,32}`, like a package id
 - **files:** the library alone, plus any `tsmod_<name>.files` list next to it naming more files
+- **`<suffix>`** is the server's `tsmod_*` suffix (`_i386.so`, `_amd64.so`, `.dll`,
+  `_amd64.dll`; `plugin_pkg::Platform::library_suffix`). On win32, `tsmod_*_amd64.dll` isn't a
+  candidate.
+- **The `.files` list:** one path per line, relative to `cl_dlls/`, under the path rules (§3.2);
+  blank lines and lines starting with `#` are ignored. The list itself is one of the approved
+  files, so editing it prompts again.
 
 It goes through the start-up prompt with the unsigned warning. The approval covers that one hash,
 so every rebuild prompts again. Developers can pre-approve a build instead (§11).
@@ -433,12 +507,17 @@ stuffed `tsrs_reconnect` does no more than a stuffed `connect`.
 
 The pure parts go in a new crate, `crates/plugin-pkg`: no unsafe, shared by the client and
 tsmod-launcher.
-- manifest parsing and path rules
-- zip checks
-- the store format
-- SHA-256 over files
-- the comparison in §5.2, which produces a `Change` list
-- signature and countersignature checks (`ed25519-dalek`)
+- manifest parsing and path rules (`manifest`, `path`)
+- zip checks and unpacking (`package`), and writing packages for xtask (`build`)
+- the store format (`store`)
+- SHA-256 over files, in parallel (`hash`)
+- the comparison in §5.2, which produces a `Change` list and a verdict (`verify`): load, prompt,
+  blocked, or refuse (§5.2 step 5)
+- signature and countersignature checks (`ed25519-dalek`; `sign`, `trust`)
+- version changes and downgrades, and the update card's summary (`version`)
+
+Its dependencies are kept to what the launcher already has (`zip` with deflate only, `sha2`,
+`semver`, `toml`, `serde`, `base64`) plus `ed25519-dalek`.
 
 ## 11. Development and tests
 
@@ -768,7 +847,7 @@ Notes:
   * **"Reconnect without changing"** and **"Cancel",** as above.
 
   The default button is Cancel, so a stray Enter doesn't downgrade. Approved plugins stay in
-  `cl_plugins/`; a plugin whose `requires` the older port doesn't meet is skipped at start, with
+  `cl_plugins/`; a plugin whose `[requires] port` (§3.2) the older port doesn't meet is skipped at start, with
   the reason, until the port is updated again. The launcher doesn't keep a second installation
   per server.
 * **Plugin updates** need no launcher update step. The new plugin version was already approved

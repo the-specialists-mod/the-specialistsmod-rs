@@ -324,6 +324,15 @@ win32 under Wine (listen server, `ts_arena`).
   [implementation/bot-plugins.md](implementation/bot-plugins.md) §6) was added with issue #104 and
   not yet run in this document's runs; its checks are unit tested against a synthetic log.
 
+* **Client plugin packages** (`crates/plugin-pkg`, issue #296): unit tests only (`cargo test -p
+  plugin-pkg`): the manifest and path rules, crafted zips (traversal, symlinks, duplicate and
+  case-colliding names, extra, missing and tampered files, oversized entries), every `Change`
+  variant against a real unpacked install in a temporary directory (including an edit that keeps
+  the size and mtime), the store round trip and `.bad` fallback, signatures,
+  countersignatures, key changes and downgrades. Nothing loads plugins yet; the loader and the
+  e2e runs of `implementation/client-plugins.md` §11 come with it. Not run on Windows (the
+  Windows cross-builds are only compiled and linted).
+
 * **Save games and level transitions** (#104): the save/restore code is covered by unit tests
   only (`cargo test`: the codec's byte layout, every linked class walked against TS's save tables,
   every class round-tripped with all fields filled, the global state's blocks). No xtask scenario
