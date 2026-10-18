@@ -264,10 +264,11 @@ impl ClientRules for Ts21Client {
         true
     }
 
-    /// 2.1 has no `cl_slowfade` and writes no screen fade for slow motion: the icon is its only
-    /// slow-motion cue (issue #152).
+    /// Deviation: 2.1 has no `cl_slowfade` and writes no screen fade for slow motion (the icon is
+    /// its only cue, issue #152). 2.1 mode keeps 3.0's tint as a visual-only cue on top of the icon
+    /// (issue #324); `cl_slowfade 0` turns it off.
     fn slowmo_tint(&self) -> bool {
-        false
+        true
     }
 
     /// The fire events' pitch helper (0x100738a0, through thunk 0x1000367f from 0x10073b70,

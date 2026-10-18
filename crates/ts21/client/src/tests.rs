@@ -100,8 +100,8 @@ fn input() {
 fn map_effects_and_icon() {
     assert!(!v21().map_effects() && v30().map_effects());
     assert!(v21().slowmo_icon() && !v30().slowmo_icon());
-    // No `cl_slowfade` tint in 2.1 (issue #152).
-    assert!(!v21().slowmo_tint() && v30().slowmo_tint());
+    // 2.1 has no `cl_slowfade` tint (issue #152); 2.1 mode keeps 3.0's as a visual deviation (#324).
+    assert!(v21().slowmo_tint() && v30().slowmo_tint());
 }
 
 /// Issues #193, #194: 2.1's weapon `Think` (0x100899f0) has no laser-colour send, no fire-mode click and

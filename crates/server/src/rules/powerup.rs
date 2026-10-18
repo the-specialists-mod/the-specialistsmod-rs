@@ -42,6 +42,9 @@ pub struct PowerupRules {
     /// `UpdateClientData`: the `TSSlowMo` amount while slow motion / slow pause runs.
     pub hud_slowmo: f32,
     pub hud_slowpause: f32,
+    /// `UpdateClientData`: normal speed (an amount of 1) goes out as `TSSlowMo` 0, the "not
+    /// slowed" value a client that reads 0 as normal expects (TS 2.1's icon, issue #324).
+    pub hud_normal_as_zero: bool,
     /// `PlayerAddPowerUp` (0x97bc8): the grenade power-up's `PickUpWeapon(0x18, NULL, 0, select,
     /// 0)` draws the grenades (`select` 1); otherwise only a player on kung fu draws them.
     pub grenade_selects: bool,
@@ -451,8 +454,13 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32, armor: f32
 
 /// The `TSSlowMo` value: 0.225 under slow pause, 0.35 under slow motion (`rules`), else the
 /// display amount. Port addition: a plugin's `set_physics_speed` (`PlayerRules::physics_speed`)
-/// replaces it.
+/// replaces it. Normal speed goes out as 0 under [`PowerupRules::hud_normal_as_zero`].
 pub fn hud_slow_amount(p: &Player, rules: &PowerupRules) -> f32 {
+    let v = hud_slow_raw(p, rules);
+    if rules.hud_normal_as_zero && v == 1.0 { 0.0 } else { v }
+}
+
+fn hud_slow_raw(p: &Player, rules: &PowerupRules) -> f32 {
     if let Some(v) = p.ts.physics_speed {
         v
     } else if p.active_powerup & pw::SLOWPAUSE != 0 {
@@ -575,6 +583,22 @@ pub fn run_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #324: a ruleset whose client reads `TSSlowMo` 0 as normal gets 0 at normal speed, and the
+    /// slowed amounts unchanged.
+    #[test]
+    fn hud_slow_normal_as_zero() {
+        let mut p = Player::default();
+        p.ts.slow_display = 1.0;
+        let mut r = *crate::gameplay::active().server.powerups();
+        assert_eq!(hud_slow_amount(&p, &r), 1.0);
+        r.hud_normal_as_zero = true;
+        assert_eq!(hud_slow_amount(&p, &r), 0.0);
+        p.ts.slow_display = 0.5;
+        assert_eq!(hud_slow_amount(&p, &r), 0.5);
+        p.active_powerup = pw::SLOWMO;
+        assert_eq!(hud_slow_amount(&p, &r), r.hud_slowmo);
+    }
 
     /// #132: the flow sees through glass, and a full slowed list stops only the listing.
     #[test]

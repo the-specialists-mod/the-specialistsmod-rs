@@ -37,6 +37,7 @@ struct Mock {
     blocks: Vec<f32>,
     blades: u32,
     anims: u32,
+    last_anim: (i32, bool, i32),
     /// block.wav plays.
     block_sounds: u32,
     /// The last `set_view_model` and `set_fov` (`None`: never called).
@@ -125,8 +126,9 @@ impl GunHost for Mock {
     fn event(&mut self, ev: Event, args: EventArgs) {
         self.events.push((ev, args));
     }
-    fn weapon_anim(&mut self, _anim: i32, _skip_local: bool, _body: i32) {
+    fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32) {
         self.anims += 1;
+        self.last_anim = (anim, skip_local, body);
     }
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f64, shake: bool) {
@@ -710,6 +712,10 @@ fn kungfu_block_end_and_sound() {
     ccombat_block(&mut g, &mut h);
     assert!((g.block_kungfu - 20.3).abs() < 1e-5 && g.next_primary == 0.3);
     assert_eq!(h.block_sounds, 1, "the first block");
+    // 2.1 mode: 3.0's block view animation to the owner (not predicted), no event (#324).
+    assert_eq!((h.anims, h.last_anim, h.events.len()), (1, (g.seq(1), false, 0), 0));
+    assert_eq!(g.seq(1), 4, "v_melee.mdl's block");
+    assert_eq!(g.idle, 3.0);
     // The block ended 0.9 s ago: no sound, though none is running.
     (g.next_primary, g.next_secondary) = (0.0, 0.0);
     h.time = g.block_kungfu + 0.9;

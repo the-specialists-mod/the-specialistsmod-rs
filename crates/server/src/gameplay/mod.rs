@@ -442,6 +442,7 @@ pub(crate) const TEST_POWERUPS: crate::rules::powerup::PowerupRules = crate::rul
     slowpause: (0.8, 0.225, true),
     hud_slowmo: 0.35,
     hud_slowpause: 0.225,
+    hud_normal_as_zero: false,
     grenade_selects: true,
 };
 

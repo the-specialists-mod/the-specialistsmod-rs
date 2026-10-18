@@ -33,6 +33,10 @@ pub const POWERUPS: PowerupRules = PowerupRules {
     // slow motion (`0x100890cc` / `0x100890c8`).
     hud_slowmo: 0.35,
     hud_slowpause: 0.15,
+    // `TSInit` (0x100552f0) starts `pl+0x158` at 0 and the last sent at -1, so a 2.1 server sends
+    // 0 for normal speed; the client's icon (0x10086651) shows for anything else. The port keeps
+    // 3.0's 1 for normal, so 2.1 mode sends that as 0 (issue #324).
+    hud_normal_as_zero: true,
     // `PlayerAddPowerUp` (0x100599d0): `PickUpWeapon(0x18, NULL, 0, '\0')`, so the grenades are
     // drawn only from kung fu (`PickUpWeapon` 0x10055830: `select || current == 0`).
     grenade_selects: false,
@@ -219,6 +223,8 @@ mod tests {
         assert_eq!(r.slowmo, (0.55, 0.35, false));
         assert_eq!(r.slowpause, (0.6, 0.15, true));
         assert_eq!((r.hud_slowmo, r.hud_slowpause), (0.35, 0.15));
+        let core: &dyn ts_server::gameplay::ServerRules = &ts30_server::Ts30Server;
+        assert!(r.hud_normal_as_zero && !core.powerups().hud_normal_as_zero, "2.1 sends 0 at normal speed");
         // The 3.0 values are untouched.
         assert_eq!(ts30_server::powerup::POWERUPS.slowpause, (0.8, 0.225, true));
     }

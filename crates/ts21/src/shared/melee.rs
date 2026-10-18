@@ -598,7 +598,7 @@ fn blocked(gun: &mut Gun, host: &mut dyn GunHost, next_attack: f32, bar_cost: f3
 }
 
 /// `CCombatBlock` (`FUN_1004dc70`), from `Reload` with kung fu only: a blade's reload key does
-/// nothing. No bar cost and no animation; block for `min(3, 0.3·T)` (until that past the time,
+/// nothing. No bar cost and no animation (2.1 mode plays 3.0's); block for `min(3, 0.3·T)` (until that past the time,
 /// [`block_end`]), and so long before the next attack. block.wav when the last block ended over
 /// a second ago ([`block_sound`]). Server only in 2.1 mode: client.dll's copy (`FUN_100245b0`,
 /// which keeps `pl+0x724` the same way) is never reached, its `ItemPostFrame` (`FUN_10025f40`)
@@ -618,6 +618,14 @@ pub fn ccombat_block(gun: &mut Gun, host: &mut dyn GunHost) {
     let w = block_window(BLOCK_HOLD, t_of(host));
     gun.next_primary = w;
     gun.next_secondary = w;
+    // 2.1 plays no block animation (it has no kung-fu view model). 2.1 mode plays 3.0's
+    // `v_melee.mdl` block, set A `[1]` as 3.0's close-combat event does (0x100433bb), sent to the
+    // owner because 2.1's client doesn't predict the block. No event: 2.1's (0x100792e0) has no
+    // block branch and would play closecombat.wav and trace. The idle waits 3.0's 3 s so the block
+    // isn't cut short; 2.1's kung-fu idle (`FUN_1004dc40`) times nothing else (visual
+    // compatibility deviation, docs/implementation/ts21.md).
+    host.weapon_anim(gun.seq(1), false, 0);
+    gun.idle = 3.0;
 }
 
 // ---- the stock hit -------------------------------------------------------------------------
