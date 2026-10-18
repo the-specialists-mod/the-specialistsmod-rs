@@ -74,8 +74,13 @@ crates/
   plugin-pkg/    client plugin packages (.tspkg), manifests, signatures, approved.toml and per-file
                  verification; no unsafe, no engine dependency, shared with tsmod-launcher
                  (implementation/client-plugins.md §10)
+  client-ext-api/ ts-client-ext-api: the C ABI the client offers client extensions, cl_dlls/tsmod_*
+                 libraries it loads once the approval gate allows (implementation/client-ext-api.md)
+  tsmod-client-test/ the stub client extension `tsmod_test` and its helper process (a test
+                 fixture for `cargo xtask client-plugins`)
   client/        ts-client: client game logic (rlib, no unsafe)
-  client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
+  client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll; also loads
+                 the client extensions (ext.rs; the logic is ts-client's `ext`)
 xtask/           build, dist, install, server tests
 game/ts/         liblist.gam, gameinfo.txt, delta.lst, game.tga, ts_logo_big.tga (installed over the TS content)
 docs/            design.md (this), implementation/*.md (per subsystem), validation.md

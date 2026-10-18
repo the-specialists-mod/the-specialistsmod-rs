@@ -41,6 +41,10 @@ crates/
   plugin-pkg/    client plugin packages (.tspkg), manifests, signatures, the approval store and
                  per-file verification (docs/implementation/client-plugins.md §10). tsmod-launcher
                  links it too: no engine or port-crate dependencies, documented public API
+  client-ext-api/ ts-client-ext-api: the C ABI the client offers client extensions (cl_dlls/tsmod_*
+                 libraries, loaded only through the approval gate). no_std; VERSION exact, MINOR
+                 fills reserved slots (docs/implementation/client-ext-api.md)
+  tsmod-client-test/ the stub client extension (`cargo xtask client-plugins`); FFI like tsmod-test
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
   ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks, the weapon tables in
@@ -58,7 +62,7 @@ game/ts/         liblist.gam, gameinfo.txt, delta.lst, the icons (game.tga, ts_l
 ```
 
 **`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`** (and the test fixture
-`tsmod-test`, a plugin library that is nothing but FFI). `ts-server`,
+`tsmod-test` and `tsmod-client-test`, plugin libraries that are nothing but FFI). `ts-server`,
 `ts-client`, `shared`, `ts-gameplay` and the `ts30-*`/`ts21-*` packages are `#![deny(unsafe_code)]`,
 and `plugin-pkg` is `#![forbid(unsafe_code)]`. The rules:
 
@@ -115,6 +119,8 @@ cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, fo
                                           # and fighting, botlearn
 cargo xtask plugins [<root>...]           # the tsmod_* loader (stub plugin + fixtures it must skip) and the stub's
                                           # bot backend (ts_bot_backend test) on a dedicated server, all roots
+cargo xtask client-plugins [fwgs fwgs-win] # the client extension loader (stub + fixtures it must skip) and the
+                                          # extension API on a listen server; dev profile only (~40 s per root)
 cargo xtask ts21 [--no-clients] [<root>...]
                                           # TS 2.1 mode on every root's dedicated server, driven by rcon:
                                           # the server config's and rcon's ts_gameplay reloads, LMS, The One,
@@ -173,6 +179,10 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_as <player#> <command> ...` runs a client command as another player (e.g. a bot's `ts_give`).
 - `ts_dev_hamlog 1` logs the plugin entity hooks (Spawn, TakeDamage, Killed) as `[ts ham]` lines
   (`docs/implementation/plugin-api.md` §7).
+- `ts_dev_key <key> <1|0>` (client) presses a key through the engine's `Key_Event`;
+  `ts_dev_extsuspend <name> <1|0>` suspends a client extension (both need `ts_dev_scriptinput 1`).
+  Client extensions load only if approved; debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
+  (docs/implementation/client-ext-api.md §3).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

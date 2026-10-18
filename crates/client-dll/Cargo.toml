@@ -14,6 +14,9 @@ crate-type = ["cdylib"]
 goldsrc   = { path = "../goldsrc", features = ["client"] }
 shared    = { path = "../shared" }
 ts-client = { path = "../client" }
+# Client extensions (cl_dlls/tsmod_*, issue #293): the C ABI, and the loader that maps them.
+ts-client-ext-api = { path = "../client-ext-api" }
+libloading = "0.8"
 # The gameplay plugins (docs/implementation/gameplay-plugins.md), registered at `Initialize`, each
 # behind its default-on feature: TS 3.0 (`ts30`) and TS 2.1 (`ts21`, docs/implementation/ts21.md).
 # At least one is required; the first registered (3.0 when both are on) is the default ruleset.

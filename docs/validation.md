@@ -223,6 +223,13 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 `cargo xtask plugins [roots...]`: a dedicated server per root with the stub plugin `tsmod_test`
 and the loader's fixtures; see implementation/bot-plugins.md §6 for what it checks.
 
+`cargo xtask client-plugins [fwgs fwgs-win ...]` (issue #293, dev profile only): a listen server
+per FWGS root with the stub client extension `tsmod_test` in `cl_dlls/`, the loader's fixtures and
+the development approval override; see implementation/client-ext-api.md §9 for what it checks.
+Like every client check it needs a display: from a session without one, start an Xvfb and run
+xtask with `DISPLAY` set to it, `SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset (§4). It passed
+on `fwgs` (36 s) and `fwgs-win` (68 s) on 2026-10-18.
+
 ### 2.y TS 2.1 mode (`cargo xtask ts21`)
 
 `cargo xtask ts21 [--no-clients] [roots...]` (issue #103, `xtask/src/ts21.rs`): TS 2.1 mode on a
@@ -538,6 +545,7 @@ port's FWGS client joins both and logs `[ts] gameplay: the server runs ruleset 2
 | `xtask play`: the host sometimes spawns with nothing after the scripted buy (`spawned (#1) with []`, issue #102), mostly on fwgs-win | The compositor resizes the Wine window a second or two after the join (the engine re-renders its fonts at a new size); FWGS then calls `HUD_VidInit`, which closes the buy menu as TS's does (`CHudTSWeapons::VidInit` `0x1004cb50` re-runs the menu's `Init` `0x10036200`), and the `slotN` keys went nowhere | The join sends `buy` (reopens the menu while observing) and the keys twice; the second pass submits the same loadout |
 | `xtask play`: no `[ts fx] laser other` line for the bot (issue #179) | The bot's random loadout (seen: Golden Colts, a knife and an M16, with their ammo) left fewer free slots than a Beretta's 10, so `ts_as 2 ts_give 2_2` was refused (`PickUpWeapon`'s slot check) and the bot kept a gun without a laser | The bot gets the Berettas as its loadout (`ts_as 2 rst_cfg`, `ts_as 2 tkw 2_2 2_0`) before its first spawn |
 | `ts_hurt` on a player who has just respawned does nothing (`applied=false health=100`) | Spawn protection (`protect_until`) | Scripts hurt again a second later (`ts21::Server::hurt`) |
+| A scripted client run does nothing: no `[ts] client` lines, only the server's, in `engine.log`, which starts with `SDL_Init failed: No available video device` | The session has no display (an agent's shell, ssh): FWGS then runs as a dedicated server | Run an Xvfb (`Xvfb :87 -screen 0 1280x800x24`) and start xtask with `DISPLAY=:87 SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset |
 | `savenodes` in a scripted test would overwrite the content's `.ndm` | The roots' `ts/maps` is a symlink to the content directory | The scripts never run `savenodes`; `resetnodes` is followed by `loadnodes` |
 
 ## 5. Steam Half-Life client (HL25, issues #23 and #5)

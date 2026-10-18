@@ -24,7 +24,7 @@ and #10, version 4 #117 and #99, version 3 #104). Versions don't stay compatible
 | The table, constants and contract (append-only, `no_std`) | `crates/plugin-api` (`ts-plugin-api`) |
 | `CreateInterface` and the table's `extern "C"` functions | `crates/server-dll/src/exports.rs`, `plugin_api.rs` |
 | The logic: argument checks, deferral, snapshots | `crates/server/src/plugin_api.rs` (tests in `plugin_api/tests.rs`); bots `plugin_api/bots.rs`; entities and game state `plugin_api/world_info.rs` |
-| The `tsmod_*` loader: naming rule, header check, descriptor checks | `crates/server/src/plugins/loader.rs` (pure, unit tested); opening the library and calling it: `crates/server-dll/src/plugins.rs` |
+| The `tsmod_*` loader: naming rule, header check, descriptor checks | `crates/server/src/plugins/loader.rs` (pure, unit tested; the naming and header rules are `crates/shared/src/plugin_lib.rs`, shared with the client's extension loader, client-ext-api.md); opening the library and calling it: `crates/server-dll/src/plugins.rs` |
 | Plugin callbacks (when they run), log, data directory, commands, cvars | `crates/server/src/plugins/mod.rs`, `plugins/host.rs` |
 | Plugin ids, attached plugins and listener owners (version 7, §1.4) | `crates/server/src/plugins/mod.rs` (`Registry`, `attach_plugin`, `detach_plugin`); their backends `crates/server/src/bot_backend/mod.rs` (`register_plugin`, `drop_plugin`) |
 | The stub plugin | `crates/tsmod-test` (`cargo xtask plugins`) |

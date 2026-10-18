@@ -1,0 +1,8 @@
+[package]
+name = "ts-client-ext-api"
+description = "C ABI the TS client library offers client extensions (cl_dlls/tsmod_* libraries)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]

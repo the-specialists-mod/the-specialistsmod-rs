@@ -227,9 +227,20 @@ static DEV_SCRIPT_INPUT: Global<Cell<Cvar>> = Global(Cell::new(Cvar::NULL));
 /// Whether a gated `+` command may press its button: a physical key this frame, the dev aid, or a
 /// ruleset without the gate ([`ClientRules::input_gate`](crate::gameplay::ClientRules::input_gate)).
 pub fn gate_open() -> bool {
-    REAL_KEY.0.get()
-        || !crate::gameplay::current().input_gate()
-        || (DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0)
+    REAL_KEY.0.get() || !crate::gameplay::current().input_gate() || dev_input_allowed()
+}
+
+/// `ts_dev_scriptinput 1` with `sv_cheats 1`: scripted input may stand in for a player's (the
+/// gate above, and the dev aids `ts_dev_key` and `ts_dev_extsuspend`, `crate::ext`).
+pub fn dev_input_allowed() -> bool {
+    DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0
+}
+
+/// A menu or a client extension (`crate::ext::cursor_wanted`) owns the mouse: the view holds
+/// still and mouse motion moves the virtual cursor. Clicks go to the menu only when a menu owns
+/// it (`mouse_event`); an extension gets them as keys through `HUD_Key_Event`.
+pub fn cursor_owned() -> bool {
+    crate::menus::wants_cursor() || crate::ext::cursor_wanted()
 }
 
 /// TS `FUN_10023450`: gated `+forward`/`+back`/`+moveleft`/`+moveright`/`+attack`/`+attack2`/
@@ -694,7 +705,7 @@ fn filter_mouse(raw: [f32; 2], old: [f32; 2], on: bool) -> [f32; 2] {
 /// and `sensitivity` (unclamped), then `yaw -= x·m_yaw`, `pitch += y·m_pitch` clamped to ±89.
 fn apply_mouse(raw: [f32; 2], view: &mut [f32; 3]) {
     let c = cvars();
-    if crate::menus::wants_cursor() {
+    if cursor_owned() {
         let s = crate::hud::screen();
         mouse(|m| {
             m.cursor[0] = (m.cursor[0] + raw[0]).clamp(0.0, cursor_max(s.width));
@@ -1052,7 +1063,7 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     let mut view = e.view_angles();
 
     // A menu that owns the mouse keeps the view still and moves the virtual cursor instead.
-    if crate::menus::wants_cursor() {
+    if cursor_owned() {
         let held = menu_hold(MENU_ANGLES.0.get(), LAST_SET_ANGLES.0.get(), view);
         MENU_ANGLES.0.set(Some(held));
         view = held;
@@ -1127,7 +1138,7 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     bits |= joystick_move_bits(c.joystick.value(), cmd.forwardmove);
     cmd.buttons = bits as u16;
 
-    if crate::menus::wants_cursor()
+    if cursor_owned()
         && let Some(a) = MENU_ANGLES.0.get()
     {
         view = a;

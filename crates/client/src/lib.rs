@@ -19,6 +19,7 @@ pub mod camera;
 pub mod demo;
 pub mod effects;
 pub mod events;
+pub mod ext;
 pub mod gameplay;
 pub mod hud;
 pub mod input;

@@ -66,6 +66,7 @@
 //! `TS_ORIGINAL_DIR`) is only for `package-xash-win`.
 
 mod a2s;
+mod client_plugins;
 mod lint;
 mod package;
 mod plugins;
@@ -143,6 +144,11 @@ fn main() {
                 exit(1);
             }
         }
+        "client-plugins" => {
+            if !ctx.client_plugins_all(&play_roots(&args)) {
+                exit(1);
+            }
+        }
         "ts21" => {
             let clients = !take_flag(&mut args, "--no-clients");
             if !ctx.ts21_all(&select_roots(&args), clients) {
@@ -208,7 +214,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|ts21|version|all|client|steam|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|ts21|version|all|client|steam|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
@@ -395,7 +401,8 @@ impl Ctx {
         }
         for t in targets {
             let mut c = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-            // `tsmod-test` is the stub plugin (`cargo xtask plugins`); dist/ never ships it.
+            // `tsmod-test` is the stub plugin (`cargo xtask plugins`) and `tsmod-client-test` the
+            // stub client extension (`cargo xtask client-plugins`); dist/ ships neither.
             c.current_dir(&self.repo).args([
                 "build",
                 "-p",
@@ -404,6 +411,8 @@ impl Ctx {
                 "ts-client-dll",
                 "-p",
                 "tsmod-test",
+                "-p",
+                "tsmod-client-test",
                 "--target",
                 t.triple,
             ]);
@@ -474,6 +483,7 @@ impl Ctx {
         self.install_libs(&t, &gamedir);
         // A `plugins` run cut short may have left its stub and fixtures: other runs go without.
         plugins::remove_fixtures(&gamedir.join("dlls"));
+        client_plugins::remove_fixtures(&gamedir.join("cl_dlls"));
         say!("== {}: installed into {}", root.name, gamedir.display());
     }
 
@@ -1119,6 +1129,12 @@ impl Ctx {
     /// Scripts don't `quit`: server commands the game library queues (the bot quota's `kick`) wait
     /// behind the script in the console buffer, so they only run once it has ended.
     fn run_script(&self, root: &Root, tag: &str, cfg: &str, port: u16, linger: Duration, limit: Duration) -> Run {
+        self.run_script_env(root, tag, cfg, port, linger, limit, &[])
+    }
+
+    /// [`Self::run_script`] with extra environment variables for the game.
+    #[allow(clippy::too_many_arguments)] // run_script's, plus the environment
+    fn run_script_env(&self, root: &Root, tag: &str, cfg: &str, port: u16, linger: Duration, limit: Duration, env: &[(&str, &str)]) -> Run {
         let gamedir = root.path.join("ts");
         let cfg_name = format!("xtask_{tag}.cfg");
         let marker = gamedir.join(format!("xtask_{tag}_done"));
@@ -1154,6 +1170,7 @@ impl Ctx {
             Command::new(root.path.join("xash3d"))
         };
         let _ = fs::remove_file(root.log_path());
+        cmd.envs(env.iter().copied());
         let mut child = cmd.current_dir(&root.path).args(args).stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("start client");
         let t = Instant::now();
         let (mut exited, mut done_at) = (false, None);
