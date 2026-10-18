@@ -240,7 +240,10 @@ client check it needs a display: from a session without one, start an Xvfb and r
 and `fwgs-win` (roughly a minute each, longer under Wine) on 2026-10-18, with both the approval and
 the minor-1 checks. The minor-2 checks (#306, #314: ducking, a dying player out of
 `visible_players`, the HUD hidden and placed, the MOTD taken over, answered and given back) and
-#315's "no non-existent cvar warning" were added after that run and haven't run in an engine yet.
+#315's "no non-existent cvar warning" passed on `fwgs` and `fwgs-win` on 2026-10-18 too. Their
+script points `motdfile` at a file xtask writes for the run (`script_start`'s `motdfile` names
+none, so `motd` sends nothing), and kills the bot with `ts_hurt` (`ts_as <n> kill` does nothing:
+`kill` is the engine's `ClientKill` export, not a client command).
 The GLES state save (#306) isn't run by any check: xtask picks no renderer, and FWGS's desktop
 default is `gl`, so it is covered by the unit tests only (`-p goldsrc ext::gles_state`); a run
 with `-ref gles2` (or `gles1`, `gl4es`) would exercise it.

@@ -779,7 +779,8 @@ fn note_duck(buttons: u32) {
         s.duck_cmds += 1;
         s.duck_cmds
     });
-    if n >= 60 {
+    // A duck takes 0.4 s (20 commands at 100 fps under xtask's 2x time scale); a little more.
+    if n >= 30 {
         let mut ls = LocalState::default();
         // SAFETY: a table function, called with a valid out-pointer.
         let rc = unsafe { (api().local_state)(&mut ls) };
