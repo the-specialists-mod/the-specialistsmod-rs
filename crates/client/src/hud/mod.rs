@@ -7,6 +7,7 @@
 //! text and `CHudMenu`.
 
 pub mod draw;
+pub mod elements;
 mod geiger;
 mod icons;
 mod message;
@@ -454,7 +455,13 @@ fn apply_effect(f: Effect) {
         Effect::ConsolePrint(t) => e.print_bytes(&saytext::bytes(&t)),
         Effect::SayText(t, client) => say_text_print(&saytext::bytes(&t), client),
         // SDK CHudTextMessage sends HUD_PRINTCENTER to the engine's centre print.
-        Effect::CenterPrint(t) => e.center_print_bytes(&saytext::bytes(&t)),
+        // Port addition (issue #314): a client extension may hide the centre prints; the engine
+        // draws them, so a hidden one isn't printed at all.
+        Effect::CenterPrint(t) => {
+            if !elements::hidden(ts_client_ext_api::hud::CENTRE) {
+                e.center_print_bytes(&saytext::bytes(&t))
+            }
+        }
     }
 }
 
@@ -1134,6 +1141,8 @@ pub fn redraw(time: f32, intermission: bool) {
 
     // Intermission: TS hides VGUI menus and shows the scoreboard (and with hud_takesshots times a
     // `snapshot`, [`shot_due`]); on leaving it hides the scoreboard.
+    // Port addition: the client extensions' HUD control (issue #314, `elements`).
+    elements::next_frame();
     let was = INTERMISSION.0.replace(intermission);
     let entering = intermission && !was;
     if intermission != was {
@@ -1158,9 +1167,10 @@ pub fn redraw(time: f32, intermission: bool) {
     let g = GFX.0.borrow();
     let Some(g) = g.as_ref() else { return };
     let dc = Dc { g, now: time, hud: input::hud_rgb() };
+    use ts_client_ext_api::hud as el;
     if intermission {
         // Only `HUD_INTERMISSION` elements draw: TS sets it on the say text alone.
-        draw_say_text(&dc);
+        elements::draw(el::CHAT, || draw_say_text(&dc));
     } else if !hide_all {
         let nohud = input::cvars().nohud.value() != 0.0;
         // TS element order (§4.1), each needing `HUD_ACTIVE` and no `HIDEHUD_ALL`: CHudGeiger,
@@ -1177,24 +1187,26 @@ pub fn redraw(time: f32, intermission: bool) {
         }
         draw_train(&dc);
         let mut canvas = draw::EngineCanvas(&g.sprites);
-        with(|h| {
-            if h.message.active {
-                h.message.build = crate::gameplay::hud_rules(h.gameplay).dll_build();
-                h.message.draw(time, &g.screen, &g.sprites, &mut canvas, &mut h.crt)
-            }
+        elements::draw(el::HUDTEXT, || {
+            with(|h| {
+                if h.message.active {
+                    h.message.build = crate::gameplay::hud_rules(h.gameplay).dll_build();
+                    h.message.draw(time, &g.screen, &g.sprites, &mut canvas, &mut h.crt)
+                }
+            })
         });
         statusbar::draw(&dc);
         if !nohud {
-            notice::draw_death_notices(&dc);
+            elements::draw(el::KILLFEED, || notice::draw_death_notices(&dc));
         }
         let icons = with(|h| h.icons.active.then(|| h.icons.clone()));
         if let Some(icons) = icons {
-            icons.draw(dc.h());
+            elements::draw(el::STATUS_ICONS, || icons.draw(dc.h()));
         }
-        crate::spectator::draw_hltv_names();
+        elements::draw(el::SPECTATOR, crate::spectator::draw_hltv_names);
         weapons::draw(&dc, nohud);
         status::draw(&dc, nohud);
-        draw_say_text(&dc);
+        elements::draw(el::CHAT, || draw_say_text(&dc));
         notice::draw_menu(&dc);
     }
     draw_logo(g, time);

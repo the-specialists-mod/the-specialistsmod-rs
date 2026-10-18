@@ -499,6 +499,17 @@ fn run_team_action(a: team::Action) {
     }
 }
 
+/// The team menu's answer without the menu: a client extension's `menu_reply` to a team menu it
+/// took over (port addition, issue #314). What [`run_team_action`] does for a team button, with
+/// no menu of the port's to close.
+pub fn join_team(n: i32) {
+    let cmd = format!("jointeam {n}");
+    engine().client_cmd(&cmd);
+    if let Some(t) = local_team_of(&cmd) {
+        crate::state::with(|s| s.team_number = t);
+    }
+}
+
 /// The team `CMenuHandler_StringCommandWatch` stores for its command: TS compares the whole
 /// string with `"jointeam 1"`..`"jointeam 4"` (`strcmp`), so auto-assign (`jointeam 5`) sets none.
 fn local_team_of(cmd: &str) -> Option<i32> {
@@ -1063,7 +1074,8 @@ fn paint_vgui() {
         });
         if shown {
             let mut voice = |p: i32| crate::voice::scoreboard_icon(p);
-            with(|m| m.board.paint(s, sb, w, h, &mut voice, &list_arrows));
+            // Port addition: a client extension may hide it (issue #314).
+            hud::elements::draw(ts_client_ext_api::hud::SCOREBOARD, || with(|m| m.board.paint(s, sb, w, h, &mut voice, &list_arrows)));
         }
     });
     // Then the panels parented since: the voice labels and talk icon, and the message window,

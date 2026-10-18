@@ -5,7 +5,11 @@ pub mod entities;
 #[cfg(feature = "client")]
 pub mod gl;
 #[cfg(feature = "client")]
+pub mod gles_state;
+#[cfg(feature = "client")]
 pub mod hud;
+#[cfg(feature = "client")]
+pub mod hud_record;
 #[cfg(feature = "client")]
 pub mod models;
 pub mod movement;

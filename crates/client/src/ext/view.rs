@@ -54,6 +54,29 @@ pub fn note_refdef(on_ground: bool) {
     ON_GROUND.0.set(on_ground);
 }
 
+/// Ducked (`FL_DUCKING`) as the last `HUD_PostRunCmd` predicted it ([`note_ducking`]).
+static DUCKING: goldsrc::Global<std::cell::Cell<bool>> = goldsrc::Global(std::cell::Cell::new(false));
+
+/// `HUD_PostRunCmd`'s `to.client.flags & FL_DUCKING`, for [`LocalState::flags`] (issue #306).
+/// `FL_DUCKING` is set once the duck has finished, as the server's movement sets it (the hull is
+/// the ducked one), not while the view is still lowering.
+pub fn note_ducking(ducking: bool) {
+    DUCKING.0.set(ducking);
+}
+
+/// [`LocalState::flags`] from the state each comes from.
+pub fn local_flags(on_ground: bool, ducking: bool, observer: bool, intermission: bool) -> u32 {
+    let mut flags = 0;
+    for (on, bit) in
+        [(on_ground, local::ON_GROUND), (observer, local::OBSERVER), (intermission, local::INTERMISSION), (ducking, local::DUCKING)]
+    {
+        if on {
+            flags |= bit;
+        }
+    }
+    flags
+}
+
 /// `ClientExtApi::local_state`.
 pub fn local_state() -> Result<LocalState, i32> {
     let e = engine();
@@ -67,16 +90,8 @@ pub fn local_state() -> Result<LocalState, i32> {
     });
     let angles = e.view_angles();
     let velocity = crate::state::with(|s| s.local_velocity);
-    let mut flags = 0;
-    if ON_GROUND.0.get() {
-        flags |= local::ON_GROUND;
-    }
-    if observer {
-        flags |= local::OBSERVER;
-    }
-    if intermission {
-        flags |= local::INTERMISSION;
-    }
+    // An observer's or a dead player's last predicted duck isn't theirs now.
+    let flags = local_flags(ON_GROUND.0.get(), DUCKING.0.get() && health > 0 && !observer, observer, intermission);
     Ok(LocalState {
         index,
         alive: (health > 0 && !observer) as i32,
@@ -193,8 +208,8 @@ pub fn bearing_elevation(eye: [f32; 3], angles: [f32; 3], target: [f32; 3]) -> (
 }
 
 /// The players in view (`ClientExtApi::visible_players`), nearest first: not the local player,
-/// in this frame's packet, drawn, not an observer, on the screen, and reached by a world trace
-/// from the eye to its head or its centre. Cached per frame by [`super`].
+/// in this frame's packet, drawn, not an observer, not dead ([`super::alive`]), on the screen, and
+/// reached by a world trace from the eye to its head or its centre. Cached per frame by [`super`].
 pub fn visible_players() -> Vec<VisiblePlayer> {
     let e = engine();
     let Some(me) = e.local_player() else { return Vec::new() };
@@ -211,9 +226,9 @@ pub fn visible_players() -> Vec<VisiblePlayer> {
             continue;
         }
         let Some(p) = e.entity(slot) else { continue };
-        let (msg, effects, origin, model) = (p.curstate.messagenum, p.curstate.effects, p.origin, p.model);
+        let (msg, effects, origin, model, movetype) = (p.curstate.messagenum, p.curstate.effects, p.origin, p.model, p.curstate.movetype);
         let observer = crate::state::with(|s| s.spectator.get(slot as usize - 1).copied().unwrap_or(false));
-        if model.is_null() || msg != my_msg || effects & EF_NODRAW as i32 != 0 || observer {
+        if model.is_null() || msg != my_msg || effects & EF_NODRAW as i32 != 0 || observer || super::player_dead(slot, msg, movetype) {
             continue;
         }
         let Some((x, y)) = e.world_to_screen(origin, &screen) else { continue };
@@ -276,6 +291,13 @@ pub fn weapon_name(id: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_flag_bits() {
+        assert_eq!(local_flags(false, false, false, false), 0);
+        assert_eq!(local_flags(true, true, false, false), local::ON_GROUND | local::DUCKING);
+        assert_eq!(local_flags(false, false, true, true), local::OBSERVER | local::INTERMISSION);
+    }
 
     #[test]
     fn bearings() {

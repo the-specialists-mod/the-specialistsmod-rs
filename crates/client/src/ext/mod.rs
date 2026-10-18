@@ -24,13 +24,17 @@
 //! | `message_pre` | each user message, before the HUD ([`message_pre`], [`intercept`]) |
 //! | `command_pre` | each port client command, before it runs (`goldsrc`'s command filter) |
 //! | `server_cmd_pre` | each command the port sends to the server (`goldsrc`'s server command filter) |
+//! | `menu_shown` | once a frame, for each menu the extension took over ([`takeover`]) |
+//! | `menu_closed` | a takeover ended without the extension's answer |
 //!
 //! Every dispatch copies the list of extensions out first, so an extension may call the table
 //! (which reads this module's state) from any callback.
 
+pub mod alive;
 pub mod events;
 pub mod gate;
 pub mod intercept;
+pub mod takeover;
 pub mod view;
 
 use gate::{ApprovalGate, Approved, Candidate};
@@ -95,6 +99,11 @@ pub trait ExtHooks {
     fn resume(&self) {}
     fn server_changed(&self, _address: &CStr) {}
     fn shutdown(&self) {}
+    /// Whether it still shows the menu of `kind` it took over; `None` without the callback.
+    fn menu_shown(&self, _kind: i32) -> Option<bool> {
+        None
+    }
+    fn menu_closed(&self, _kind: i32, _reason: i32) {}
 }
 
 /// Opens one approved library as extension `id` (the FFI in `ts-client-dll`): its callbacks and
@@ -111,6 +120,8 @@ struct Entry {
     suspended: bool,
     /// Why it is suspended (`cl_plugins_list`, client-plugins.md §13.4).
     reason: String,
+    /// The HUD elements it hides (`ClientExtApi::hud_set_hidden`, issue #314).
+    hud_hidden: u64,
 }
 
 struct Command {
@@ -149,6 +160,10 @@ struct State {
     holds: intercept::Holds,
     /// Interception warnings already printed (once per extension and text).
     warned: Vec<(ExtId, String)>,
+    /// Other players' deaths, for `visible_players` (issue #306).
+    deaths: alive::Deaths,
+    /// The menus extensions took over (issue #314).
+    takeovers: takeover::Takeovers,
 }
 
 static STATE: Global<RefCell<Option<State>>> = Global(RefCell::new(None));
@@ -279,6 +294,7 @@ pub fn load_one(c: &Candidate, open: Open) -> bool {
             hooks: None,
             suspended: false,
             reason: String::new(),
+            hud_hidden: 0,
         };
         s.exts.push(entry);
         id
@@ -286,6 +302,7 @@ pub fn load_one(c: &Candidate, open: Open) -> bool {
     match open(c, id) {
         Ok((hooks, desc)) => {
             with(|s| s.exts.iter_mut().find(|e| e.id == id).map(|e| e.hooks = Some(hooks.clone())));
+            push_hidden();
             say(&format!("loaded {} ({desc}; {}, approved by {})", c.file, approved.id, approved.source));
             let (hud, vid) = with(|s| (s.hud_init, s.vid_init));
             if hud {
@@ -377,6 +394,7 @@ pub fn frame(time: f64) {
         h.frame(time);
     }
     with_holds(|h, ask, warn| h.tick(now_ms(), ask, warn));
+    menus_frame();
     let cursor = active().iter().any(|h| h.wants_cursor());
     with(|s| s.cursor = cursor);
 }
@@ -386,10 +404,13 @@ pub fn frame(time: f64) {
 fn server_changed(server: Option<String>) {
     let address = CString::new(server.clone().unwrap_or_default()).unwrap_or_default();
     // What the last connection's extensions held isn't displayed on the next.
-    with(|s| {
+    let closed = with(|s| {
         s.server = server.clone();
         s.holds.clear();
+        s.deaths.clear();
+        s.takeovers.reset()
     });
+    tell_closed(closed);
     // Plugins approved for this server only load now, and stay loaded (§9); they hear of the
     // server below like the others.
     if let Some(open) = with(|s| s.open) {
@@ -466,6 +487,11 @@ pub fn on_hud_message(m: shared::protocol::Msg, buf: &[u8]) {
     if with(|s| s.exts.is_empty()) {
         return;
     }
+    note_deaths(m, buf);
+    if m == Msg::ResetHUD {
+        let closed = with(|s| s.takeovers.reset());
+        tell_closed(closed);
+    }
     let local = engine().local_player().map_or(0, |p| p.index);
     let map =
         if m == shared::protocol::Msg::InitHUD { events::map_name(&goldsrc::ext::render::level_name()).to_owned() } else { String::new() };
@@ -480,6 +506,30 @@ pub fn on_hud_message(m: shared::protocol::Msg, buf: &[u8]) {
             h.game_event(e);
         }
     }
+}
+
+/// What a message says about other players' deaths ([`alive`]).
+fn note_deaths(m: Msg, buf: &[u8]) {
+    use shared::protocol::hud as p;
+    match m {
+        Msg::DeathMsg => {
+            let Some(d) = p::DeathMsg::decode(buf) else { return };
+            let packet = engine().local_player().map_or(0, |me| me.curstate.messagenum);
+            with(|s| s.deaths.died(d.victim as i32, packet));
+        }
+        Msg::Spectator => {
+            let Some(sp) = p::Spectator::decode(buf) else { return };
+            with(|s| s.deaths.spectator(sp.client as i32));
+        }
+        Msg::InitHUD => with(|s| s.deaths.clear()),
+        _ => {}
+    }
+}
+
+/// Whether player `slot` is dead ([`alive::Deaths::is_dead`]): its entity last came in packet
+/// `messagenum` with `movetype`.
+pub fn player_dead(slot: i32, messagenum: i32, movetype: i32) -> bool {
+    with(|s| s.deaths.is_dead(slot, messagenum, movetype))
 }
 
 /// `HUD_Shutdown`: every extension, suspended or not.
@@ -502,8 +552,11 @@ pub fn suspend(name: &str, reason: &str) -> bool {
         Some((e.id, e.hooks.clone()?))
     });
     let Some((id, h)) = hooks else { return false };
-    // Its holds pass, and it isn't asked again.
+    // Its holds pass, and it isn't asked again; the menus it took over and the HUD elements it hid
+    // come back (fail open, issue #314).
     with_holds(|holds, ask, warn| holds.drop_ext(id, now_ms(), ask, warn));
+    give_back(|t| t.ext == id);
+    push_hidden();
     h.suspend(&CString::new(reason).unwrap_or_default());
     true
 }
@@ -517,6 +570,7 @@ pub fn resume(name: &str) -> bool {
         e.hooks.clone()
     });
     let Some(h) = hooks else { return false };
+    push_hidden();
     h.resume();
     true
 }
@@ -565,7 +619,7 @@ pub fn host_add_command(id: ExtId, name: &str, f: ts_client_ext_api::CommandFn) 
         return INVALID;
     }
     let lower = name.to_ascii_lowercase();
-    if with(|s| s.commands.iter().any(|c| c.name == lower)) || !Cvar::find(&CString::new(name).unwrap_or_default()).is_null() {
+    if with(|s| s.commands.iter().any(|c| c.name == lower)) || !Cvar::lookup(&CString::new(name).unwrap_or_default()).is_null() {
         return EXISTS;
     }
     with(|s| s.commands.push(Command { name: lower, ext: id, f }));
@@ -591,7 +645,7 @@ pub fn host_register_cvar(id: ExtId, name: &str, value: &str, flags: i32) -> i32
         return INVALID;
     }
     let lower = name.to_ascii_lowercase();
-    if !Cvar::find(&CString::new(name).unwrap_or_default()).is_null() || with(|s| s.commands.iter().any(|c| c.name == lower)) {
+    if !Cvar::lookup(&CString::new(name).unwrap_or_default()).is_null() || with(|s| s.commands.iter().any(|c| c.name == lower)) {
         return EXISTS;
     }
     Cvar::register(leak(name), leak(value), flags);
@@ -600,7 +654,7 @@ pub fn host_register_cvar(id: ExtId, name: &str, value: &str, flags: i32) -> i32
 
 /// `ClientExtApi::set_cvar_value`.
 pub fn host_set_cvar(name: &CStr, value: f32) -> i32 {
-    if Cvar::find(name).is_null() {
+    if Cvar::lookup(name).is_null() {
         return NOT_FOUND;
     }
     engine().cvar_set(name, value);
@@ -790,9 +844,12 @@ fn with_holds(f: impl FnOnce(&mut intercept::Holds, &mut intercept::AskFn, &mut 
     }
     let mut holds = with(|s| std::mem::take(&mut s.holds));
     let out = f(&mut holds, &mut ask_message, &mut warn_once);
+    let blocks = holds.take_blocks();
     with(|s| s.holds = holds);
+    note_menu_blocks(blocks);
     for (m, p) in out {
         ext_log(|| format!("{} released: {}", m.name().to_string_lossy(), printable(&p)));
+        note_menu_shown(m, &p);
         crate::hud::display_released(m, &p);
     }
 }
@@ -809,7 +866,14 @@ pub fn message_pre(m: Msg, buf: &[u8]) -> Dispatch {
     }
     let mut holds = with(|s| std::mem::take(&mut s.holds));
     let d = holds.message(m, buf, &ids, now_ms(), &mut ask_message, &mut warn_once);
+    let blocks = holds.take_blocks();
     with(|s| s.holds = holds);
+    note_menu_blocks(blocks);
+    match &d {
+        Dispatch::Whole => note_menu_shown(m, buf),
+        Dispatch::Split(Some(p)) => note_menu_shown(m, p),
+        Dispatch::Split(None) => {}
+    }
     if intercept::message_allow(m) != Some(0) {
         ext_log(|| {
             let what = match &d {
@@ -915,6 +979,134 @@ fn server_cmd_filter(cmd: &str) -> Option<String> {
     Some(line)
 }
 
+// ---- HUD control and menu takeover (issue #314) ---------------------------------------------------
+
+/// The HUD elements hidden now: every extension's that isn't suspended (suspension shows them
+/// again), for `crate::hud::elements`.
+fn push_hidden() {
+    let (mask, any) = with(|s| (hidden_mask(s.exts.iter().map(|e| (e.suspended, e.hud_hidden))), !s.exts.is_empty()));
+    crate::hud::elements::set_hidden(mask);
+    crate::hud::elements::set_tracking(any);
+}
+
+/// The union of the masks of the extensions (`suspended`, `mask`) that aren't suspended.
+pub fn hidden_mask(exts: impl Iterator<Item = (bool, u64)>) -> u64 {
+    exts.filter(|(suspended, _)| !suspended).fold(0, |m, (_, mask)| m | mask)
+}
+
+/// `ClientExtApi::hud_set_hidden`.
+pub fn host_hud_set_hidden(id: ExtId, mask: u64) -> i32 {
+    if name_of(id).is_none() || mask & !ts_client_ext_api::hud::ALL != 0 {
+        return INVALID;
+    }
+    if is_suspended(id) {
+        return SUSPENDED;
+    }
+    with(|s| s.exts.iter_mut().filter(|e| e.id == id).for_each(|e| e.hud_hidden = mask));
+    push_hidden();
+    ext_log(|| format!("hud hidden by {}: {mask:#x}", name_of(id).unwrap_or_default()));
+    OK
+}
+
+/// `ClientExtApi::hud_elements`.
+pub fn host_hud_elements() -> Vec<ts_client_ext_api::HudElement> {
+    crate::hud::elements::list()
+}
+
+/// What the takeovers need to know of the game now.
+fn menu_ctx() -> takeover::Ctx {
+    takeover::Ctx { teamplay: crate::hud::with(|h| h.gamemode) >= 1, now_ms: now_ms() }
+}
+
+/// Menus extensions blocked: takeovers.
+fn note_menu_blocks(blocks: Vec<(Msg, ExtId, Vec<u8>)>) {
+    for (m, ext, p) in blocks {
+        let closed = with(|s| s.takeovers.message(m, &p, Some(ext), menu_ctx()));
+        ext_log(|| format!("{} taken over by {}", m.name().to_string_lossy(), name_of(ext).unwrap_or_default()));
+        tell_closed(closed);
+    }
+}
+
+/// A menu the port displays (passed, rewritten or released): it replaces a takeover of its kind.
+fn note_menu_shown(m: Msg, p: &[u8]) {
+    if takeover::kind_of(m).is_none() || with(|s| s.takeovers.is_empty()) {
+        return;
+    }
+    let closed = with(|s| s.takeovers.message(m, p, None, menu_ctx()));
+    tell_closed(closed);
+}
+
+/// Tells extensions their takeovers ended (`ClientExt::menu_closed`), unless suspended.
+fn tell_closed(closed: Vec<takeover::Closed>) {
+    for (ext, kind, reason) in closed {
+        ext_log(|| format!("menu {kind} of {} closed ({reason})", name_of(ext).unwrap_or_default()));
+        if let Some(h) = active_hooks(ext) {
+            h.menu_closed(kind, reason);
+        }
+    }
+}
+
+/// The takeovers `pick` chooses fail open: the port displays their menus.
+fn give_back(pick: impl FnMut(&takeover::Takeover) -> bool) -> Vec<(ExtId, i32)> {
+    let back = with(|s| if s.takeovers.is_empty() { Vec::new() } else { s.takeovers.give_back(pick) });
+    let mut who = Vec::new();
+    for (ext, kind, chunks) in back {
+        ext_log(|| format!("menu {kind} of {} given back to the port", name_of(ext).unwrap_or_default()));
+        for (m, p) in chunks {
+            crate::hud::display_released(m, &p);
+        }
+        who.push((ext, kind));
+    }
+    who
+}
+
+/// Once a frame: takeovers whose time ran out end, and each extension that holds one is asked
+/// whether it still shows it (`menu_shown`); one that says no gives it back.
+fn menus_frame() {
+    if with(|s| s.takeovers.is_empty()) {
+        return;
+    }
+    let closed = with(|s| s.takeovers.expire(now_ms()));
+    tell_closed(closed);
+    let open = with(|s| s.takeovers.open());
+    let dropped: Vec<(ExtId, i32)> =
+        open.into_iter().filter(|&(ext, kind)| active_hooks(ext).and_then(|h| h.menu_shown(kind)) == Some(false)).collect();
+    if dropped.is_empty() {
+        return;
+    }
+    for (ext, kind) in give_back(|t| dropped.contains(&(t.ext, t.kind))) {
+        if let Some(h) = active_hooks(ext) {
+            h.menu_closed(kind, ts_client_ext_api::menu_closed::GIVEN_BACK);
+        }
+    }
+}
+
+/// `ClientExtApi::menu_reply`: the port's own answer to the menu of `kind` extension `id` took
+/// over, if `choice` is one the menu offers.
+pub fn host_menu_reply(id: ExtId, kind: i32, choice: &str) -> i32 {
+    if name_of(id).is_none() {
+        return INVALID;
+    }
+    if is_suspended(id) {
+        return SUSPENDED;
+    }
+    let teams = crate::hud::with(|h| h.team_names.len());
+    let answer = match with(|s| s.takeovers.reply(id, kind, choice, teams)) {
+        Ok(a) => a,
+        Err(e) => {
+            ext_log(|| format!("menu {kind} reply {choice:?} refused ({e})"));
+            return e;
+        }
+    };
+    ext_log(|| format!("menu {kind} answered: {answer:?}"));
+    match answer {
+        takeover::Answer::Server(cmd) => engine().server_cmd(&cmd),
+        takeover::Answer::Team(n) => crate::menus::join_team(n),
+        takeover::Answer::Close => {}
+    }
+    OK
+}
+
 // ---- dev aids (port additions) ------------------------------------------------------------------
 
 /// `ts_dev_extsuspend <name> <1|0> [reason]` (needs `ts_dev_scriptinput 1` and `sv_cheats 1`, as
@@ -968,6 +1160,13 @@ mod tests {
         assert!(!valid_command(""));
         assert!(!valid_command(&"x".repeat(64)));
         assert_eq!(data_dir_of(Path::new("/g/ts"), "webview"), Path::new("/g/ts/cl_plugins_data/webview"));
+    }
+
+    #[test]
+    fn hidden_elements_are_every_active_extensions() {
+        assert_eq!(hidden_mask([(false, 0b01), (false, 0b100)].into_iter()), 0b101);
+        assert_eq!(hidden_mask([(true, 0b01), (false, 0b100)].into_iter()), 0b100, "a suspended extension's come back");
+        assert_eq!(hidden_mask(std::iter::empty()), 0);
     }
 
     #[test]

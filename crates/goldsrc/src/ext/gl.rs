@@ -274,12 +274,20 @@ fn save_fns() -> Option<&'static SaveFns> {
     .as_ref()
 }
 
-/// Runs `f` with the desktop GL state saved around it: every attribute group, every client
-/// attribute group and the projection, model-view and texture matrices, then the matrix mode the
-/// caller had. Port addition for client extensions' `redraw` (issue #293), so an extension can't
-/// leave the HUD's GL state changed. On GLES and the software renderer (or a GL library missing
-/// a function) `f` just runs.
+/// Runs `f` with the GL state saved around it. Port addition for client extensions' `redraw`
+/// (issues #293, #306), so an extension can't leave the HUD's GL state changed. On desktop GL:
+/// every attribute group, every client attribute group and the projection, model-view and texture
+/// matrices, then the matrix mode the caller had. On FWGS's GLES renderers, which have no attribute
+/// stack: the specific state [`super::gles_state`] lists, read with `glGet*` and set back. On the
+/// software renderer (or a GL library missing a function) `f` just runs.
 pub fn with_saved_state<R>(f: impl FnOnce() -> R) -> R {
+    if renderer() == Renderer::Gles {
+        let Some(gl) = super::gles_state::Real::get() else { return f() };
+        let saved = super::gles_state::save(&gl, gl.generation());
+        let r = f();
+        saved.restore(&gl);
+        return r;
+    }
     let Some(g) = save_fns() else { return f() };
     let mut mode = GL_MODELVIEW as i32;
     // SAFETY: GL 1.1 functions looked up above, called with their signatures from a render

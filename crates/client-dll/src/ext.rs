@@ -11,8 +11,9 @@ use std::sync::OnceLock;
 use ts_client::ext::gate::Candidate;
 use ts_client::ext::{self as ext, ExtHooks, view};
 use ts_client_ext_api::{
-    AimInfo, COMMAND_MAX, ClientExt, ClientExtApi, CommandFn, CommandPre, ExtId, GameEvent, INVALID, LOAD_SYMBOL, LoadFn, LoadInfo,
-    LocalState, MESSAGE_MAX, MINOR, MessagePre, OK, PlayerScore, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, renderer, verdict,
+    AimInfo, COMMAND_MAX, ClientExt, ClientExtApi, CommandFn, CommandPre, ExtId, GameEvent, HudElement, INVALID, LOAD_SYMBOL, LoadFn,
+    LoadInfo, LocalState, MESSAGE_MAX, MINOR, MessagePre, OK, PlayerScore, TraceInfo, UserCmd, VERSION, ViewInfo, VisiblePlayer, renderer,
+    verdict,
 };
 
 /// `Initialize`: the approved extensions (`ts_client::ext::load_all`).
@@ -178,6 +179,14 @@ impl ExtHooks for Loaded {
             _ => ext::Verdict::Pass,
         }
     }
+    fn menu_shown(&self, kind: i32) -> Option<bool> {
+        self.desc.menu_shown.map(|f| f(kind) != 0)
+    }
+    fn menu_closed(&self, kind: i32, reason: i32) {
+        if let Some(f) = self.desc.menu_closed {
+            f(kind, reason);
+        }
+    }
     fn server_cmd_pre(&self, cmd: &ext::CmdCall) -> ext::Verdict {
         let Some(f) = self.desc.server_cmd_pre else { return ext::Verdict::Pass };
         let argv: Vec<*const c_char> = cmd.argv.iter().map(|a| a.as_ptr()).collect();
@@ -251,6 +260,9 @@ fn build() -> ClientExtApi {
         max_clients,
         claim_channel: Some(claim_channel),
         release: Some(release),
+        hud_set_hidden: Some(hud_set_hidden),
+        hud_elements: Some(hud_elements),
+        menu_reply: Some(menu_reply),
         reserved: [None; ts_client_ext_api::API_RESERVED],
     }
 }
@@ -360,12 +372,12 @@ unsafe extern "C" fn register_cvar(id: ExtId, name: *const c_char, value: *const
 
 unsafe extern "C" fn cvar_value(name: *const c_char) -> f32 {
     // SAFETY: the table's contract for string arguments.
-    unsafe { arg(name) }.map_or(0.0, |n| Cvar::find(n).value())
+    unsafe { arg(name) }.map_or(0.0, |n| Cvar::lookup(n).value())
 }
 
 unsafe extern "C" fn cvar_string(name: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
     // SAFETY: the table's contract for string arguments.
-    let s = unsafe { arg(name) }.and_then(|n| Cvar::find(n).string()).map(|s| s.to_bytes().to_vec()).unwrap_or_default();
+    let s = unsafe { arg(name) }.and_then(|n| Cvar::lookup(n).string()).map(|s| s.to_bytes().to_vec()).unwrap_or_default();
     // SAFETY: the table's contract for buffers.
     unsafe { put_bytes(buf, len, &s) }
 }
@@ -540,4 +552,21 @@ unsafe extern "C" fn release(id: ExtId, token: u32, verdict: c_int, data: *const
         _ => return INVALID,
     };
     ext::host_release(id, token, verdict, data)
+}
+
+// ---- minor 2 ------------------------------------------------------------------------------------
+
+unsafe extern "C" fn hud_set_hidden(id: ExtId, mask: u64) -> c_int {
+    ext::host_hud_set_hidden(id, mask)
+}
+
+unsafe extern "C" fn hud_elements(out: *mut HudElement, max: c_int) -> c_int {
+    // SAFETY: the table's contract for lists.
+    unsafe { put_list(out, max, &ext::host_hud_elements()) }
+}
+
+unsafe extern "C" fn menu_reply(id: ExtId, kind: c_int, choice: *const c_char) -> c_int {
+    // SAFETY: the table's contract for string arguments; NULL is "" (close it).
+    let choice = unsafe { arg(choice) }.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+    ext::host_menu_reply(id, kind, &choice)
 }

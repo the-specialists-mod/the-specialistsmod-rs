@@ -579,7 +579,8 @@ fn smooth(p: &mut ref_params_t) {
 /// viewport refreshes first.
 pub fn redraw() {
     panel::think();
-    panel::draw();
+    // Port addition: a client extension may hide it (issue #314).
+    crate::hud::elements::draw(ts_client_ext_api::hud::SPECTATOR, panel::draw);
 }
 
 /// `CHudSpectator::Draw` (`0x10023080`, the HLTV name tags), called from the HUD's element pass

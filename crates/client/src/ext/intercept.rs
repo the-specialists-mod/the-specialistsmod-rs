@@ -191,6 +191,9 @@ enum Slot {
 pub struct Holds {
     kinds: Vec<(Msg, VecDeque<Entry>)>,
     next_token: u32,
+    /// Menus an extension blocked since the last [`Holds::take_blocks`]: the message, the
+    /// extension, the payload as it saw it (the takeovers, issue #314, `super::takeover`).
+    blocks: Vec<(Msg, ExtId, Vec<u8>)>,
 }
 
 /// What [`Holds::message`] tells the HUD.
@@ -229,6 +232,18 @@ impl Holds {
         self.kinds.iter().all(|(_, q)| q.is_empty())
     }
 
+    /// The menus extensions blocked since the last call, in order.
+    pub fn take_blocks(&mut self) -> Vec<(Msg, ExtId, Vec<u8>)> {
+        std::mem::take(&mut self.blocks)
+    }
+
+    /// Extension `ext` blocked message `m` (`payload` as it saw it): a takeover if it is a menu.
+    fn blocked(&mut self, m: Msg, ext: ExtId, payload: &[u8]) {
+        if super::takeover::kind_of(m).is_some() {
+            self.blocks.push((m, ext, payload.to_vec()));
+        }
+    }
+
     /// Runs `payload` (message `m`, `orig` as it came) through `exts` in order.
     fn run(
         &mut self,
@@ -246,7 +261,10 @@ impl Holds {
             let name = m.name().to_string_lossy();
             match v {
                 Verdict::Pass => {}
-                Verdict::Block if allowed & allow::BLOCK != 0 => return Run::Done(None),
+                Verdict::Block if allowed & allow::BLOCK != 0 => {
+                    self.blocked(m, ext, &payload);
+                    return Run::Done(None);
+                }
                 Verdict::Replace(new) if allowed & allow::REPLACE != 0 => match check_replacement(m, orig, &new) {
                     Ok(()) => payload = new,
                     Err(why) => {
@@ -307,7 +325,10 @@ impl Holds {
                 let Slot::Waiting(w) = std::mem::replace(&mut self.kinds[k].1[i].state, Slot::Ready(None)) else { unreachable!() };
                 let orig = std::mem::take(&mut self.kinds[k].1[i].orig);
                 let payload = match v {
-                    Verdict::Block => None,
+                    Verdict::Block => {
+                        self.blocked(m, w.ext, &w.payload);
+                        None
+                    }
                     Verdict::Replace(new) => match check_replacement(m, &orig, &new) {
                         Ok(()) => Some(new),
                         Err(why) => {
@@ -381,6 +402,7 @@ impl Holds {
     /// The connection ended: nothing held is displayed.
     pub fn clear(&mut self) {
         self.kinds.clear();
+        self.blocks.clear();
     }
 }
 
@@ -398,6 +420,25 @@ mod tests {
 
     fn quiet() -> impl FnMut(ExtId, String) {
         |_, _| {}
+    }
+
+    /// Blocks of menus are kept for the takeovers, with who blocked them and the payload as that
+    /// extension saw it; other blocks aren't.
+    #[test]
+    fn menu_blocks_are_recorded() {
+        let mut h = Holds::default();
+        let menu = p::ShowMenu { slots: 1, time: -1, more: 0, text: "1. x".into() }.encode();
+        let mut ask = |a: &Ask| Some(if a.ext == 2 { Verdict::Block } else { Verdict::Pass });
+        assert_eq!(h.message(Msg::ShowMenu, &menu, &[1, 2, 3], 0.0, &mut ask, &mut quiet()), Dispatch::Split(None));
+        h.message(Msg::SayText, &say(1, "hi"), &[1, 2], 0.0, &mut ask, &mut quiet());
+        assert_eq!(h.take_blocks(), vec![(Msg::ShowMenu, 2, menu.clone())]);
+        assert!(h.take_blocks().is_empty());
+        // A deferred menu released as a block counts too.
+        let mut defer = |a: &Ask| Some(if a.ext == 1 { Verdict::Defer } else { Verdict::Pass });
+        h.message(Msg::ShowMenu, &menu, &[1], 0.0, &mut defer, &mut quiet());
+        let token = h.next_token;
+        assert!(h.release(1, token, Verdict::Block, 1.0, &mut defer, &mut quiet()).is_some());
+        assert_eq!(h.take_blocks(), vec![(Msg::ShowMenu, 1, menu)]);
     }
 
     #[test]

@@ -35,13 +35,16 @@ pub fn draw(dc: &Dc, nohud: bool) {
     }
     let dead_or_obs = super::dead_or_observer();
     let id = if dead_or_obs { None } else { crosshair_trace() };
+    // Port addition: the client extensions' HUD control (issue #314, `super::elements`).
+    use super::elements::draw as element;
+    use ts_client_ext_api::hud as el;
     super::with(|h| {
         h.crosshair_id = id.as_ref().map(|(i, t, _)| (*i, *t));
         if h.round_time != 0.0 {
-            draw_round_timer(dc, h);
+            element(el::TIMER, || draw_round_timer(dc, h));
         }
-        draw_ts_messages(dc, h);
-        draw_flag_panel(dc, h);
+        element(el::NOTIFY, || draw_ts_messages(dc, h));
+        element(el::OBJECTIVE, || draw_flag_panel(dc, h));
         if dead_or_obs {
             return;
         }
@@ -49,16 +52,16 @@ pub fn draw(dc: &Dc, nohud: bool) {
             draw_teammate_markers(dc, h);
         }
         if let Some((_, team, name)) = &id {
-            dc.string(dc.w() / 2, dc.h() / 2 - 40, name, if *team == 1 { GREEN } else { RED });
+            element(el::CROSSHAIR, || dc.string(dc.w() / 2, dc.h() / 2 - 40, name, if *team == 1 { GREEN } else { RED }));
         }
         draw_status_panel(dc, h);
         if h.pw_flags == 0 {
             h.pw_expire = 0.0;
         } else {
-            draw_powerup(dc, h);
+            element(el::POWERUP, || draw_powerup(dc, h));
         }
         if h.gamemode > 1 {
-            draw_objective_markers(dc, h);
+            element(el::OBJECTIVE, || draw_objective_markers(dc, h));
         }
     });
 }
@@ -251,88 +254,100 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     if input::cvars().cl_realhud.value() != 0.0 {
         return;
     }
+    use super::elements::draw as element;
+    use ts_client_ext_api::hud as el;
     let e = engine();
     let look = crate::gameplay::hud_rules(h.gameplay).status_look();
-    let mut hud = dc.hud;
+    let hud = dc.hud;
     let (w, ht) = (dc.w(), dc.h());
-    let mut y = ht - 0x30;
-    dc.fill(8, y, 0x7f, 0x27, hud, 0xf);
-    let stance = dc.g.ts.stance[(h.stance as usize).min(2)];
-    if stance != 0 && !look.stance_health_fill {
-        e.spr_set(stance, half(hud));
-        e.spr_draw_additive(0, 8, y - 4, None);
-    } else if stance != 0 {
-        let sh = e.spr_height(stance, 0);
-        let sw = e.spr_width(stance, 0);
-        let hp = (h.health as i32).min(100);
-        // C int arithmetic: the sprite's height is file data.
-        let top = sh.wrapping_sub(hp.wrapping_mul(sh) / 100);
-        if h.health < 100 {
-            // Red over the part health doesn't fill (`0x1004a4d5..0x1004a518`: rows 0..top).
-            e.spr_set(stance, RED);
-            e.spr_draw_additive(0, 8, y - 4, Some(&goldsrc::sys::wrect_t { left: 0, right: sw, top: 0, bottom: top }));
+    let y = ht - 0x30;
+    element(el::HEALTH, || {
+        dc.fill(8, y, 0x7f, 0x27, hud, 0xf);
+        let stance = dc.g.ts.stance[(h.stance as usize).min(2)];
+        if stance != 0 && !look.stance_health_fill {
+            e.spr_set(stance, half(hud));
+            e.spr_draw_additive(0, 8, y - 4, None);
+        } else if stance != 0 {
+            let sh = e.spr_height(stance, 0);
+            let sw = e.spr_width(stance, 0);
+            let hp = (h.health as i32).min(100);
+            // C int arithmetic: the sprite's height is file data.
+            let top = sh.wrapping_sub(hp.wrapping_mul(sh) / 100);
+            if h.health < 100 {
+                // Red over the part health doesn't fill (`0x1004a4d5..0x1004a518`: rows 0..top).
+                e.spr_set(stance, RED);
+                e.spr_draw_additive(0, 8, y - 4, Some(&goldsrc::sys::wrect_t { left: 0, right: sw, top: 0, bottom: top }));
+            }
+            let rc = goldsrc::sys::wrect_t { left: 0, right: sw, top, bottom: sh };
+            e.spr_set(stance, half(hud));
+            e.spr_draw_additive(0, 8, (y - 4).wrapping_add(top), Some(&rc));
         }
-        let rc = goldsrc::sys::wrect_t { left: 0, right: sw, top, bottom: sh };
-        e.spr_set(stance, half(hud));
-        e.spr_draw_additive(0, 8, (y - 4).wrapping_add(top), Some(&rc));
-    }
-    let hp_rgb = if h.health < 50 { RED } else { half(hud) };
-    dc.number(0x48, y + 4, num::DIGITS_3 | num::DRAW_ZERO, h.health as i32, hp_rgb);
-    dc.spr(dc.g.ts.health, 0x68, y, hp_rgb);
+        let hp_rgb = if h.health < 50 { RED } else { half(hud) };
+        dc.number(0x48, y + 4, num::DIGITS_3 | num::DRAW_ZERO, h.health as i32, hp_rgb);
+        dc.spr(dc.g.ts.health, 0x68, y, hp_rgb);
+    });
     if h.armor != 0 {
-        let rgb = if h.armor < 50 { RED } else { half(hud) };
-        if look.armor_number {
-            dc.number(0x48, y + 0x18, num::DIGITS_3 | num::DRAW_ZERO, h.armor as i32, rgb);
-            dc.spr(dc.g.ts.kevlar, 0x68, y + 0x14, rgb);
-        } else {
-            dc.spr(dc.g.ts.kevlar, 0x48, y + 0x14, rgb);
-        }
+        element(el::ARMOUR, || {
+            let rgb = if h.armor < 50 { RED } else { half(hud) };
+            if look.armor_number {
+                dc.number(0x48, y + 0x18, num::DIGITS_3 | num::DRAW_ZERO, h.armor as i32, rgb);
+                dc.spr(dc.g.ts.kevlar, 0x68, y + 0x14, rgb);
+            } else {
+                dc.spr(dc.g.ts.kevlar, 0x48, y + 0x14, rgb);
+            }
+        });
     }
-    // Team bar (teamplay).
-    y -= 0x14;
-    if h.gamemode != 0
-        && let Some(me) = e.local_player()
-        && let Some(p) = usize::try_from(me.index).ok().and_then(|i| h.players.get(i))
-    {
-        // `iTeamColors[team]` (`0x1004a748`); guarded: TS indexes past the five entries.
-        if let Some(a) = look.team_bar_scale {
-            dc.fill(8, y, 0x7f, 0x13, hud, 0x23);
-            hud = scale_colors_float(hud, a);
-            dc.string(10, y, &p.teamname, hud);
-        } else {
-            let t = crate::menus::widgets::TEAM_COLORS;
-            let c = t[(p.team.max(0) as usize).min(t.len() - 1)].map(i32::from);
-            dc.fill(8, y, 0x7f, 0x13, c, 0x23);
-            dc.string(10, y, &p.teamname, c);
+    // Team bar (teamplay): part of the health box. It may scale the colour the rest uses.
+    let hud = element(el::HEALTH, || {
+        let mut hud = hud;
+        let y = y - 0x14;
+        if h.gamemode != 0
+            && let Some(me) = e.local_player()
+            && let Some(p) = usize::try_from(me.index).ok().and_then(|i| h.players.get(i))
+        {
+            // `iTeamColors[team]` (`0x1004a748`); guarded: TS indexes past the five entries.
+            if let Some(a) = look.team_bar_scale {
+                dc.fill(8, y, 0x7f, 0x13, hud, 0x23);
+                hud = scale_colors_float(hud, a);
+                dc.string(10, y, &p.teamname, hud);
+            } else {
+                let t = crate::menus::widgets::TEAM_COLORS;
+                let c = t[(p.team.max(0) as usize).min(t.len() - 1)].map(i32::from);
+                dc.fill(8, y, 0x7f, 0x13, c, 0x23);
+                dc.string(10, y, &p.teamname, c);
+            }
         }
-    }
+        hud
+    });
     // Free slots and credits.
-    let mut y = ht - 0x1c;
-    let x = 0x88;
-    dc.fill(x, y, 0x7f, 0x13, hud, 0xf);
-    let rgb = if h.slots == 0 { RED } else { half(hud) };
-    let nx = dc.number(x + 8, y + 2, num::DIGITS_2 | num::DRAW_ZERO, h.slots as i32, rgb);
-    let (slots_label, credits_label) =
-        look.labels.map_or_else(|| (localise("#HUD_FreeSlots"), localise("#HUD_Credits")), |(s, c)| (s.to_owned(), c.to_owned()));
-    dc.string(nx + 8, y, &slots_label, rgb);
-    if h.gamemode > 1 || h.cashbased != 0 {
-        y -= 0x14;
+    element(el::CASH, || {
+        let mut y = ht - 0x1c;
+        let x = 0x88;
         dc.fill(x, y, 0x7f, 0x13, hud, 0xf);
-        let rgb = if h.cash < 1000 { RED } else { half(hud) };
-        let nx = dc.number(x, y + 2, num::DIGITS_5 | num::DRAW_ZERO, h.cash, rgb);
-        dc.string(nx + 8, y, &credits_label, rgb);
-    }
+        let rgb = if h.slots == 0 { RED } else { half(hud) };
+        let nx = dc.number(x + 8, y + 2, num::DIGITS_2 | num::DRAW_ZERO, h.slots as i32, rgb);
+        let (slots_label, credits_label) =
+            look.labels.map_or_else(|| (localise("#HUD_FreeSlots"), localise("#HUD_Credits")), |(s, c)| (s.to_owned(), c.to_owned()));
+        dc.string(nx + 8, y, &slots_label, rgb);
+        if h.gamemode > 1 || h.cashbased != 0 {
+            y -= 0x14;
+            dc.fill(x, y, 0x7f, 0x13, hud, 0xf);
+            let rgb = if h.cash < 1000 { RED } else { half(hud) };
+            let nx = dc.number(x, y + 2, num::DIGITS_5 | num::DRAW_ZERO, h.cash, rgb);
+            dc.string(nx + 8, y, &credits_label, rgb);
+        }
+    });
     // `0x1004aa4e`, `0x1004aad2`: the HUD colour × 2/3.
     let icon = if look.icons_divide { hud.map(|c| ftol(c as f64 / 1.5)) } else { hud.map(|c| ftol(c as f64 * 0.666_666_666_666_666_6)) };
     if h.kungfu_icon {
-        dc.spr(dc.g.ts.kungfu, w / 2 - 0x30, ht - 0x38, icon);
+        element(el::KUNGFU, || dc.spr(dc.g.ts.kungfu, w / 2 - 0x30, ht - 0x38, icon));
     }
     if h.move_icon {
-        dc.spr(dc.g.ts.movement, w / 2, ht - 0x38, icon);
+        element(el::STUNT, || dc.spr(dc.g.ts.movement, w / 2, ht - 0x38, icon));
     }
     if crate::gameplay::hud_rules(h.gameplay).slowmo_icon() {
         // 2.1 reads the panel's colour, scaled by the team bar.
-        draw_slowmo_icon(dc, hud);
+        element(el::POWERUP, || draw_slowmo_icon(dc, hud));
     }
 }
 
