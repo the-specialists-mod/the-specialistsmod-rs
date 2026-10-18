@@ -134,13 +134,17 @@ fn platform() -> Platform {
     }
 }
 
-fn self_relaunch(gamedir: String) -> Option<SelfRelaunch> {
+/// The relaunch e2e's override of [`plan::self_relaunch_enabled`]; never set in a shipped build.
+fn forced_self_relaunch() -> Option<bool> {
     #[cfg(feature = "e2e")]
-    let forced = e2e::self_relaunch();
+    return e2e::self_relaunch();
     #[cfg(not(feature = "e2e"))]
-    let forced: Option<bool> = None;
+    None
+}
+
+fn self_relaunch(gamedir: String) -> Option<SelfRelaunch> {
     let p = platform();
-    if !forced.unwrap_or_else(|| plan::self_relaunch_enabled(p)) {
+    if !forced_self_relaunch().unwrap_or_else(|| plan::self_relaunch_enabled(p)) {
         engine().print(&format!("[ts] relaunch: self-relaunch isn't enabled on {p:?} (no passing relaunch test yet)\n"));
         return None;
     }
