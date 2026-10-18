@@ -225,14 +225,17 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 `cargo xtask plugins [roots...]`: a dedicated server per root with the stub plugin `tsmod_test`
 and the loader's fixtures; see implementation/bot-plugins.md §6 for what it checks.
 
-`cargo xtask client-plugins [fwgs fwgs-win ...]` (issues #293, #297, dev profile only): a listen
-server per FWGS root with the stub client extension `tsmod_test` in `cl_dlls/`, the loader's
-fixtures, approval packages in `cl_plugins/` and a fresh `approved.toml` written with
-`plugin-approve` (the root's own store is set aside and put back); see
-implementation/client-ext-api.md §9 and client-plugins.md §11 for what it checks. Like every
+`cargo xtask client-plugins [fwgs fwgs-win ...]` (issues #293, #294, #295, #297, dev profile
+only): a listen server per FWGS root with the stub client extension `tsmod_test` in `cl_dlls/`, the
+loader's fixtures, approval packages in `cl_plugins/` and a fresh `approved.toml` written with
+`plugin-approve` (the root's own store is set aside and put back), and the server stub plugin in
+`dlls/` for `TSExt` both ways; see implementation/client-ext-api.md §9 and client-plugins.md §11
+for what it checks. The `TSExt` and interception checks read `[ts ext]` lines (`ts_dev_extlog`)
+from the engine log after the game exits, so they hold under Wine's buffered log too. Like every
 client check it needs a display: from a session without one, start an Xvfb and run xtask with
 `DISPLAY` set to it, `SDL_VIDEODRIVER=x11` and `WAYLAND_DISPLAY` unset (§4). It passed on `fwgs`
-(60 s) and `fwgs-win` (108 s) on 2026-10-18.
+and `fwgs-win` (roughly a minute each, longer under Wine) on 2026-10-18, with both the approval and
+the minor-1 checks.
 
 The start-up box itself is answered by the debug-only hook in those runs. The real
 `SDL_ShowMessageBox` was checked by hand on `fwgs` under Xvfb on 2026-10-18 (no hook, one new

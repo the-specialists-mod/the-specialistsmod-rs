@@ -123,9 +123,10 @@ cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, fo
 cargo xtask plugins [<root>...]           # the tsmod_* loader (stub plugin + fixtures it must skip) and the stub's
                                           # bot backend (ts_bot_backend test) on a dedicated server, all roots
 cargo xtask client-plugins [fwgs fwgs-win] # the client extension loader (stub + fixtures it must skip), the
-                                          # extension API, and plugin approval (packages, tampering, the
+                                          # extension API (TSExt both ways with the server stub plugin, the
+                                          # interception hooks) and plugin approval (packages, tampering, the
                                           # start-up prompt's hook) on a listen server; dev profile only
-                                          # (~60 s fwgs, ~110 s fwgs-win)
+                                          # (about a minute per root, longer under Wine)
 cargo xtask plugin-approve <path>... [--root R]
                                           # approve a local client plugin build (.tspkg, cl_plugins/<id>/<ver>,
                                           # cl_dlls/tsmod_<name><suffix>) in cl_plugins/approved.toml
@@ -206,6 +207,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   `cargo xtask plugin-approve`); debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
   (docs/implementation/client-ext-api.md §3) and `TSRS_DEV_PLUGIN_PROMPT=<id>=<answer>,...`, which
   answers the start-up boxes (client-plugins.md §7.1). Release builds ignore both.
+  `ts_dev_extlog 1` (client) logs the extensions' interception decisions as `[ts ext]` lines
+  (client-ext-api.md §11).
 - `ts_dev_tspkg 1` (server) counts every port client as hooking `TSPkg`: builds between releases
   report the last release's version, below `TSPKG_SINCE` (docs/implementation/client-plugins.md §12).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.

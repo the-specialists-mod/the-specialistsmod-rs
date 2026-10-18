@@ -1,9 +1,11 @@
 //! User messages, in TS 3.0 registration order with TS sizes (-1 = variable), so the original
 //! TS client and this port interoperate. Source: decomp docs/server/architecture.md §3.
 //! Payload layouts are documented in architecture.md §3.2 and client/architecture-hud.md §3;
-//! per-area encoders/decoders live in submodules.
+//! per-area encoders/decoders live in submodules. The port's own messages come after TS's 64
+//! (docs/implementation/client-plugins.md §12): TS's keep their order and ids.
 
 pub mod effects;
+pub mod ext;
 pub mod hud;
 pub mod hud_wire;
 pub mod port;
@@ -90,7 +92,16 @@ messages! {
     TsFrags = c"TSFrags", -1;
     PlInfo = c"PlInfo", 3;
     TsPSys = c"TSPSys", -1;
+    // ---- port additions, after TS's 64 ----
+    // Server-to-client-extension traffic (`ext`, issue #294). Sent only to port clients.
+    TsExt = c"TSExt", -1;
+    // The plugin offers and version notices (`tspkg`, issue #298). Sent only to port clients
+    // that hook it (from `port::TSPKG_SINCE`).
+    TsPkg = c"TSPkg", -1;
 }
+
+/// How many of [`MESSAGES`] are TS 3.0's own: the port's come after them.
+pub const TS_MESSAGES: usize = 64;
 
 impl Msg {
     pub fn name(self) -> &'static CStr {
@@ -112,6 +123,10 @@ mod tests {
             assert!(name.to_bytes().len() <= 11, "{name:?} too long for the engine");
         }
         assert_eq!(Msg::TsSlowMo.name(), c"TSSlowMo");
+        assert_eq!(Msg::TsPSys as usize, TS_MESSAGES - 1, "TS's messages keep their order");
+        assert_eq!(Msg::TsExt as usize, TS_MESSAGES);
+        assert_eq!(Msg::TsPkg as usize, TS_MESSAGES + 1);
+        assert_eq!(Msg::TsPkg.name(), tspkg::NAME);
     }
 }
 

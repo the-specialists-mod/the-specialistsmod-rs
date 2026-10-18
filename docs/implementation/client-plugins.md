@@ -360,7 +360,8 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
   `TSPkg` (§12). Offers also go out on demand, with `sv_plugin_offer <#userid|name|all> <id>`;
   `sv_plugin_withdraw <#userid|name|all> <id>` sends op 2 for one sent earlier, and
   `sv_plugin_offers` lists the offers and their checks. The plugin API's
-  `offer_client_plugin(edict, id)` waits for the next plugin-api version (#304; tsmod-amxx-rs can
+  `offer_client_plugin(edict, id)` waits for the plugin-api version after 8 (version 8, #294/#304,
+  brought only `ext_message` and `client_port_version`, plugin-api.md §13; tsmod-amxx-rs can
   expose it as a native). Until then an AMX Mod X plugin can run `sv_plugin_offer` and sees the
   `tspkg` client command before the game does.
 * **Required plugins:** with `sv_plugin_required_kick 1` (default 0), a player who answers
@@ -379,12 +380,13 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
 | `sv_plugin_offers [reload]` | | lists the offers, their checks, the blocks and the policy |
 * **What the server learns:** the client's state for each offer, through `tspkg` (§6.5), logged as
   `[ts] tspkg: <player>: <id> <version> <state> [reason]`, and the plugin API event
-  `client_plugin_state(edict, id, state)` (with the next API version, #304).
+  `client_plugin_state(edict, id, state)` (with the API version after 8, as `offer_client_plugin`).
 
 ### 6.2 The `TSPkg` user message
 
-The port registers `TSPkg` after TS's 64 messages, so TS's registration order is unchanged
-(design.md §2).
+The port registers `TSPkg` after TS's 64 messages and its own `TSExt` (`shared::protocol::Msg::TsPkg`
+in the one message table, which both the server's registration and the client's hooks walk), so
+TS's registration order is unchanged (design.md §2).
 
 An offer can be longer than GoldSrc's 192-byte user message limit (ReHLDS stops the server with a
 `Host_Error` past it), so every body goes in chunks, each one `TSPkg` message, as the webview
@@ -725,9 +727,14 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
   `TSPkg` support from the port server's version (`SrvSett` keys 5–7), so neither side needs a
   new discovery channel.
 
-  Original clients never get either message, and design.md §2's contract holds.
+  Original clients never get either message from the port's own code, and design.md §2's
+  contract holds. `TSExt` is built (#294, client-ext-api.md §10): the plugin API's `ext_message`
+  sends it only to `_tsrs` clients. A raw AMX Mod X `message_begin` of `TSExt` goes past the game
+  library, so it is the AMX Mod X module's to guard (tsmod-amxx-rs#22).
 * The registration order of TS's 64 messages doesn't change. New messages are appended after
-  them.
+  them in `shared::protocol::MESSAGES` (from `shared::protocol::TS_MESSAGES`): `TSExt` first, then
+  `TSPkg`. Both sides find a message by name, so this order is the port's own choice; neither
+  reaches the client extensions' `message_pre` (client-ext-api.md §11), nor does `SrvSett`.
 * This client on an original TS server gets no offers, because nothing sends them.
 
 ## 13. Version matching
@@ -797,8 +804,9 @@ joins (§13.5). The server reads all three at each connect, so a change applies 
 * **Gameplay rulesets:** a ruleset's own client check (`gameplay::refuse_client`, the TS 2.1
   mode's) runs first and keeps its own reason. In 2.1 mode TS 3.0's client gets the 2.1 refusal
   whatever `sv_client_require_port` says, and port clients then face the version check.
-* **The plugin API** gets `client_port_version(edict)`, so AMX Mod X plugins can apply a policy
-  of their own. A new `PluginApi` entry is a version break, so it waits for the next one (#304).
+* **The plugin API** has `client_port_version(player, buf, len)` since version 8 (#304,
+  plugin-api.md §13), so AMX Mod X plugins can apply a policy of their own: the version as
+  `major.minor.patch`, 0 for TS 3.0's client, bots and HLTV, `UNSUPPORTED` for an unreadable value.
 * **The client side:**
   * The client compares the server's version (`SrvSett` keys 5–7, complete at key 7) with its own
     and prints the difference in the console (`[ts] version: this server runs The Specialists

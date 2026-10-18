@@ -53,8 +53,18 @@ impl ClEngine {
 
     /// Registers a console command. `f` is a safe `extern "C" fn()` that reads its arguments
     /// through `cmd_argc`/`cmd_argv`. The engine keeps `name`, so it must be `'static`.
+    ///
+    /// Every command goes through one trampoline that finds `f` by `argv[0]` and asks the command
+    /// filter first ([`set_command_filter`]). The first registration of a name wins, as in the
+    /// engines, which refuse (with a warning) a name they already have.
     pub fn add_command(&self, name: &'static CStr, f: extern "C" fn()) {
-        cl_eng!(pfnAddCommand(name.as_ptr(), Some(f)));
+        {
+            let mut cmds = COMMANDS.0.borrow_mut();
+            if !cmds.iter().any(|(n, _)| n.to_bytes().eq_ignore_ascii_case(name.to_bytes())) {
+                cmds.push((name, f));
+            }
+        }
+        cl_eng!(pfnAddCommand(name.as_ptr(), Some(command_trampoline)));
     }
 
     /// True on FWGS (Xash3D), which has the `host_ver` cvar; false on Steam GoldSrc. Guards for
@@ -119,6 +129,35 @@ impl ClEngine {
         cl_eng!(pfnAngleVectors(angles.as_ptr(), f.as_mut_ptr(), r.as_mut_ptr(), u.as_mut_ptr()));
         (f, r, u)
     }
+}
+
+/// The client command filter ([`set_command_filter`]): asked with `argv[0]` before a command
+/// registered through [`ClEngine::add_command`] runs; false swallows it.
+pub type CommandFilter = fn(name: &CStr) -> bool;
+
+type Command = (&'static CStr, extern "C" fn());
+static COMMANDS: Global<RefCell<Vec<Command>>> = Global(RefCell::new(Vec::new()));
+static COMMAND_FILTER: Global<std::cell::Cell<Option<CommandFilter>>> = Global(std::cell::Cell::new(None));
+
+/// Installs the filter every command of [`ClEngine::add_command`] passes first. Port addition:
+/// the client extensions' `command_pre` hook.
+pub fn set_command_filter(f: Option<CommandFilter>) {
+    COMMAND_FILTER.0.set(f);
+}
+
+/// The one function the engine has for every command the game registered: the command is found
+/// by the name it was run as (the engines match names case-insensitively).
+extern "C" fn command_trampoline() {
+    let name = engine().cmd_argv(0);
+    // Copied out, so the command may register commands itself.
+    let f = COMMANDS.0.borrow().iter().find(|(n, _)| n.to_bytes().eq_ignore_ascii_case(name.to_bytes())).map(|c| c.1);
+    let Some(f) = f else { return };
+    if let Some(filter) = COMMAND_FILTER.0.get()
+        && !filter(name)
+    {
+        return;
+    }
+    f();
 }
 
 type UserMsgHook = (&'static CStr, fn(&[u8]));

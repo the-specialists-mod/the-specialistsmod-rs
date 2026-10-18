@@ -15,7 +15,8 @@
 //!
 //! `match`, `[[block]]` and `[policy]` are parsed and kept, and the client's `tspkg list` is
 //! recorded, for their enforcement (issue #302). The plugin API's `offer_client_plugin` and
-//! `client_plugin_state` wait for the next API version (issue #304); meanwhile an AMX Mod X plugin
+//! `client_plugin_state` wait for the API version after 8 (version 8 brought only `ext_message` and
+//! `client_port_version`, issues #294, #304); meanwhile an AMX Mod X plugin
 //! sees the `tspkg` client command first and can offer through `sv_plugin_offer`.
 
 pub mod check;

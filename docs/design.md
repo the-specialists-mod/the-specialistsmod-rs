@@ -28,9 +28,12 @@ the original.
 * **User messages:** `shared::protocol::MESSAGES` lists all 64 in TS registration order with TS
   sizes. The server registers them in that order in `GameInit` (`messages::register_all`). Payload
   layouts follow decomp `server/architecture.md` §3.2 and `client/architecture-hud.md` §3. Do not
-  rename, reorder or resize them. The port's own `TSPkg` (client plugin offers,
-  `shared::protocol::tspkg`, `implementation/client-plugins.md` §6.2) is registered after them, and
-  goes only to port clients that hook it (`_tsrs` at or above `port::TSPKG_SINCE`; §12 there).
+  rename, reorder or resize them. The port's own messages are in the same table after them
+  (`protocol::TS_MESSAGES`), registered in this order: `TSExt` (client extension channels,
+  `shared::protocol::ext`, `implementation/client-ext-api.md` §10), then `TSPkg` (client plugin
+  offers, `shared::protocol::tspkg`, `implementation/client-plugins.md` §6.2). Both sides hook and
+  send by name, so the order only has to keep TS's 64 first. `TSPkg` goes only to port clients
+  that hook it (`_tsrs` at or above `port::TSPKG_SINCE`; §12 there).
 * **Events:** the same `events/*.sc` names and the same `fparam`/`iparam`/`bparam` meanings
   (decomp `server/weapons.md` §6.1, `client/rendering-effects-prediction.md` §4.2).
 * **Networked fields** (`delta.lst` is TS's original file, byte for byte; both engines accept its two missing commas):
@@ -322,6 +325,7 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 * `gameplay`: the movement and gun hooks (`PmRules`, `GunRules`) of the gameplay plugins (TS 3.0's in `crates/ts30`, TS 2.1's in `crates/ts21`). Movement takes the active rules as it takes `Arith`, and the gun reads them from `GunHost::rules`. The server and client crates define their own hook traits (`ServerRules`, `ClientRules`), and `ts_gameplay` picks the ruleset at each map start (a mid-map change of it or of `ts_bot_backend` reloads the map: `ts_server::reload`). See `docs/implementation/gameplay-plugins.md`.
 * `bsp`: the BSP entity lump and its keyvalue blocks (the client's map effects and spectator cameras).
 * `protocol::port`: what tells the port's libraries from TS 3.0's on channels TS 3.0 tolerates: the client's `_tsrs` userinfo key (its version, `3.0.2` or the numeric `3000002` a `+connect` sends first; in 2.1 mode the server refuses clients without it, and `sv_client_version`/`sv_client_require_port` can refuse by version: `ts_server::rules::client_version`, `implementation/client-plugins.md` §13.1) and the server's version in `SrvSett` keys 5..7 (the client prints a difference; `cl_version_strict 1` disconnects).
+* `protocol::ext`: `TSExt`, the port's own user message after TS's 64 (`protocol::TS_MESSAGES`): a channel and a payload for the port client's extensions, at most 192 bytes, sent only to `_tsrs` clients (plugin API version 8's `ext_message`; `implementation/client-ext-api.md` §10).
 
 ## 8. Build targets and binary compatibility
 

@@ -8,18 +8,15 @@ use shared::protocol::MESSAGES;
 pub use shared::protocol::Msg;
 use std::cell::Cell;
 
-static IDS: Global<[Cell<i32>; 64]> = Global([const { Cell::new(0) }; 64]);
-/// The port's `TSPkg` (`shared::protocol::tspkg`).
-static TSPKG: Global<Cell<i32>> = Global(Cell::new(0));
+static IDS: Global<[Cell<i32>; MESSAGES.len()]> = Global([const { Cell::new(0) }; MESSAGES.len()]);
 
-/// Registers every message in TS order, then the port's `TSPkg` after them, so TS's numbering is
-/// unchanged (design.md §2). Called once from `GameInit`. From then on every message of TS's the
-/// game sends passes the active gameplay plugin's `ServerRules::outgoing_message`.
+/// Registers every message in TS order, then the port's own after TS's 64 (`TSExt`, `TSPkg`), so
+/// TS's numbering is unchanged (design.md §2). Called once from `GameInit`. From then on every
+/// message the game sends passes the active gameplay plugin's `ServerRules::outgoing_message`.
 pub fn register_all() {
     for (m, name, size) in MESSAGES {
         IDS.0[*m as usize].set(engine().reg_user_msg(name, *size));
     }
-    TSPKG.0.set(engine().reg_user_msg(shared::protocol::tspkg::NAME, -1));
     goldsrc::server::set_outgoing_filter(Some(outgoing));
 }
 
@@ -27,7 +24,7 @@ pub fn register_all() {
 /// (`plugin_offers::hooks_tspkg`): TS 3.0's client, and port clients before
 /// `port::TSPKG_SINCE`, can fail on a message they haven't hooked.
 pub fn tspkg_one(to: *mut edict_t) -> MsgWriter {
-    MsgWriter::begin(MSG_ONE as i32, TSPKG.0.get(), None, to)
+    one(Msg::TsPkg, to)
 }
 
 pub fn id(m: Msg) -> i32 {
@@ -72,5 +69,3 @@ pub fn pvs(m: Msg, origin: [f32; 3]) -> MsgWriter {
 pub fn pas(m: Msg, origin: [f32; 3]) -> MsgWriter {
     MsgWriter::begin(MSG_PAS as i32, id(m), Some(origin), std::ptr::null_mut())
 }
-
-const _: () = assert!(MESSAGES.len() <= 64);

@@ -166,12 +166,12 @@ pub fn zoom_sensitivity() -> f32 {
 
 macro_rules! hooks {
     ($($v:ident),* $(,)?) => {
-        /// One message handler per message, dispatching to [`on_message`].
+        /// One message handler per message, dispatching to [`on_server_message`].
         fn hook_for(m: Msg) -> fn(&[u8]) {
             match m {
                 $(Msg::$v => {
                     fn f(b: &[u8]) {
-                        on_message(Msg::$v, b);
+                        on_server_message(Msg::$v, b);
                     }
                     f
                 })*
@@ -245,6 +245,8 @@ hooks!(
     TsFrags,
     PlInfo,
     TsPSys,
+    TsExt,
+    TsPkg,
 );
 
 fn local_index() -> i32 {
@@ -267,7 +269,59 @@ pub fn team_color(team: i32) -> [i32; 3] {
     status::team_color(team)
 }
 
+/// What part of a message's handling runs ([`handle`]). A client extension may block, rewrite or
+/// hold a message's display (`crate::ext::message_pre`, issue #295), never its state: the
+/// scoreboard, the spectator's death notice and the extensions' game events.
+#[derive(Clone, Copy, PartialEq)]
+enum Parts {
+    Both,
+    State,
+    Display,
+}
+
+/// A user message from the server: `TSExt` goes to the client extensions and `TSPkg` to the
+/// plugin offers ([`tspkg`]), neither past the extensions' hooks; every other one past their
+/// interception hooks, then to the HUD.
+fn on_server_message(m: Msg, buf: &[u8]) {
+    match m {
+        Msg::TsExt => return crate::ext::on_tsext(buf),
+        Msg::TsPkg => return tspkg::on_message(buf),
+        _ => {}
+    }
+    match crate::ext::message_pre(m, buf) {
+        crate::ext::Dispatch::Whole => handle(m, buf, Parts::Both),
+        crate::ext::Dispatch::Split(display) => {
+            handle(m, buf, Parts::State);
+            if let Some(d) = display {
+                handle(m, &d, Parts::Display);
+            }
+        }
+    }
+}
+
+/// The display of a message a client extension held, once released (`crate::ext`): its state
+/// was handled when it came.
+pub fn display_released(m: Msg, buf: &[u8]) {
+    handle(m, buf, Parts::Display);
+}
+
+/// A message, all of its handling: the HUD's own (`print_text_message`, `ts_hud_selftest`).
 fn on_message(m: Msg, buf: &[u8]) {
+    handle(m, buf, Parts::Both);
+}
+
+fn handle(m: Msg, buf: &[u8], parts: Parts) {
+    let (state, display) = (parts != Parts::Display, parts != Parts::State);
+    if !display {
+        // Only the messages an extension can intercept come here, and only these parts of
+        // them are state (`crate::ext::intercept::message_allow`).
+        if m == Msg::DeathMsg {
+            crate::menus::on_message(m, buf);
+            notice::on_death_msg_state(buf);
+        }
+        crate::ext::on_hud_message(m, buf);
+        return;
+    }
     // `MsgFunc_TextMsg` (`0x10034a60`) prints nothing while `AllowedToPrintText` says no.
     if m == Msg::TextMsg && !crate::menus::allowed_to_print_text() {
         return;
@@ -326,7 +380,9 @@ fn on_message(m: Msg, buf: &[u8]) {
         shared::weapons::table::set_ruleset_tables(crate::gameplay::hud_gun_rules().tables());
     }
     // The viewport's handlers for the same messages (scoreboard teams, team menu).
-    crate::menus::on_message(m, buf);
+    if state {
+        crate::menus::on_message(m, buf);
+    }
     if m == Msg::ResetHUD {
         // `0x100219c7`: `m_flMouseSensitivity` (`+0x18`) = 0 after the elements' `Reset`.
         ZOOM_SENS.0.set(0.0);
@@ -334,10 +390,15 @@ fn on_message(m: Msg, buf: &[u8]) {
         PREV_BITS.0.set(0);
     }
     if m == Msg::DeathMsg {
-        notice::on_death_msg(buf);
+        if state {
+            notice::on_death_msg_state(buf);
+        }
+        notice::on_death_msg_display(buf);
     }
     // Port addition: the client extensions' game events (issue #293).
-    crate::ext::on_hud_message(m, buf);
+    if state {
+        crate::ext::on_hud_message(m, buf);
+    }
 }
 
 /// Mirror the values other modules read into `crate::state`.
@@ -616,8 +677,6 @@ pub fn init() {
     e.hook_user_msg(c"StatusIcon", msg_status_icon);
     tfc::hook();
     statusbar::hook();
-    // Port addition: the plugin offers' and version notices' message (issue #298).
-    tspkg::hook();
     register_commands();
     // `CHudGeiger::Init` (`0x1001f450`) seeds the CRT's `rand`: `srand(time(NULL))`.
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32);

@@ -133,7 +133,7 @@ pub struct Ctx<'a> {
     pub cl_thirdperson: f32,
     pub saytext_time: f32,
     /// `hud_deathnotice_time`. No handler here reads it any more (`DeathMsg` is handled by
-    /// `hud::notice::on_death_msg`, which reads the cvar itself); kept so callers building a
+    /// `hud::notice::on_death_msg_display`, which reads the cvar itself); kept so callers building a
     /// `Ctx` elsewhere (the menus) stay unchanged.
     pub deathnotice_time: f32,
     /// `Key_LookupBinding` (`gEngfuncs` slot `0x100d5c4c`), for `ShowMenu`'s `KB_ConvertString`.
@@ -907,7 +907,7 @@ impl Hud {
                 let name = (id == 4).then(|| super::saytext::bytes(&r.string()).into_iter().take(63).collect());
                 fx.push(Effect::VguiMenu(id as i32, name));
             }
-            // `hud::notice::on_death_msg` handles it: it needs the engine's player names.
+            // `hud::notice::on_death_msg_display` handles it: it needs the engine's player names.
             Msg::DeathMsg => {
                 dec!(p::DeathMsg);
             }
@@ -1006,6 +1006,9 @@ impl Hud {
             | Msg::SelAmmo => {}
             // Engine-handled; never hooked.
             Msg::ScreenShake | Msg::ScreenFade => {}
+            // Port additions: the client extensions' channels (`crate::ext::on_tsext`) and the
+            // plugin offers (`super::tspkg`), never the HUD's.
+            Msg::TsExt | Msg::TsPkg => {}
         }
         true
     }

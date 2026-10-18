@@ -238,9 +238,18 @@ fn draw_notice(d: &DeathNotice, y: i32, screen_width: i32, skull: Option<usize>,
 /// `MsgFunc_DeathMsg` (`0x1001b360`): byte killer, byte victim, string weapon. After the
 /// scoreboard's `DeathMsg`, `CHudSpectator::DeathMessage(victim)` (the overview's dead icon),
 /// then the list entry and the console line. A short message is ignored (see Deviations).
-pub fn on_death_msg(buf: &[u8]) {
+///
+/// Split in two for the client extensions (issue #295): the spectator's notice is state, which
+/// runs when the message comes ([`on_death_msg_state`]); the kill feed and its console line are
+/// display ([`on_death_msg_display`]), which an extension can block, rewrite or hold.
+pub fn on_death_msg_state(buf: &[u8]) {
     let Some(m) = shared::protocol::hud::DeathMsg::decode(buf) else { return };
     crate::spectator::death_notice(m.victim as i32);
+}
+
+/// The kill feed's line and the console's ([`on_death_msg_state`]).
+pub fn on_death_msg_display(buf: &[u8]) {
+    let Some(m) = shared::protocol::hud::DeathMsg::decode(buf) else { return };
     let local = super::local_index();
     // `GetAllPlayersInfo` (`0x10064880`) refreshes players 1..63 just before the names are read;
     // slot 0 is never filled.

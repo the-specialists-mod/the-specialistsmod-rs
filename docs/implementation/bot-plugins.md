@@ -275,8 +275,10 @@ of the map's entities.
   bot backend and a listener of its own), detach_plugin (the id is dead for `data_dir` and
   `register_bot_backend`, its listener is gone, a loaded plugin's id and `NO_PLUGIN` are refused,
   attaching again gives a new id) and snapshot_powers (a bot's `KUNG_FU` / `SUPERJUMP` flags
-  against `player_info`), with `frame_info`'s team scores checked against `game_state`), no
-  `FAIL`, no crash. The fixtures are removed
+  against `player_info`), with `frame_info`'s team scores checked against `game_state`); plugin
+  API version 8, #294/#304: ext_message (a bot isn't a port client, a broadcast reaches nobody, a
+  bad channel, flag or length and a NULL payload are refused, the longest payload fits) and
+  client_port_version (a bot has none; slot 0 isn't a player), no `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
 * Native parity: `cargo xtask bots`, `play`, `test` unchanged.
 

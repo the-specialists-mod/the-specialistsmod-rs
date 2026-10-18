@@ -11,25 +11,29 @@ the ABI and the loader underneath them.
 |---|---|
 | The ABI: types, constants, contract (`no_std`) | `crates/client-ext-api` (`ts-client-ext-api`) |
 | Naming and header rules (shared with the server loader) | `crates/shared/src/plugin_lib.rs` |
-| The loader, the approval gate seam, dispatch, the table's logic | `crates/client/src/ext/` (`mod.rs`, `gate.rs`, `events.rs`, `view.rs`), no `unsafe` |
+| The loader, the approval gate seam, dispatch, the table's logic | `crates/client/src/ext/` (`mod.rs`, `gate.rs`, `events.rs`, `view.rs`, `intercept.rs`), no `unsafe` |
 | The approval store's gate, start-up verification and prompt (#297) | `crates/client/src/plugins/` (client-plugins.md §5, §7.1) |
 | Opening a library, `TSRS_ClientExtLoad`, the table's `extern "C"` functions | `crates/client-dll/src/ext.rs` |
-| Engine wrappers it added | `goldsrc::ext::gl` (`renderer`, `proc_address`, `with_saved_state`), `ClEngine::server_address` (`goldsrc::ext::hud`) |
-| The stub extension and its helper | `crates/tsmod-client-test` (`cargo xtask client-plugins`) |
+| Engine wrappers it added | `goldsrc::ext::gl` (`renderer`, `proc_address`, `with_saved_state`), `ClEngine::server_address` (`goldsrc::ext::hud`); minor 1: the command filter (`goldsrc::client::set_command_filter`) and the server command filter (`goldsrc::ext::hud::set_server_cmd_filter`, `ClEngine::server_cmd_unfiltered`) |
+| `TSExt` (minor 1): the wire format; the server's sender | `crates/shared/src/protocol/ext.rs`; `crates/server/src/plugin_api/ext.rs` (plugin API version 8, plugin-api.md §13) |
+| The HUD's state/display split for intercepted messages | `crates/client/src/hud/mod.rs` (`on_server_message`, `handle`, `display_released`) |
+| The stub extension and its helper | `crates/tsmod-client-test` (`cargo xtask client-plugins`, with the server stub `crates/tsmod-test` for `TSExt`) |
 
 ## 1. Versions
 
 * `VERSION` (1) is the major version. It must match exactly in both directions: the table's
   `ClientExtApi::version` and the extension's `ClientExt::api_version`. Both structs' sizes must
   match too. A break bumps `VERSION`.
-* `MINOR` (0) counts compatible additions. Both structs end in reserved, NULL slots
-  (`ClientExtApi::reserved`, 32; `ClientExt::reserved`, 16), so their sizes stay fixed while a minor
-  version turns slots into named functions and callbacks. An extension checks
+* `MINOR` (1) counts compatible additions. Both structs end in reserved, NULL slots
+  (`ClientExtApi::reserved`, 32 at minor 0; `ClientExt::reserved`, 16), so their sizes stay fixed
+  while a minor version turns slots into named functions and callbacks. An extension checks
   `ClientExtApi::minor` before calling a function added after minor 0. An older client leaves the
-  slot NULL, and never calls a callback it doesn't know.
-* Planned minors: `user_message` and `claim_channel` for `TSExt` (#294), and the interception
-  hooks `message_pre`, `command_pre`, `server_cmd_pre` with `Verdict`/`release`, `hud_set_hidden`
-  and `menu_reply` (#295). They fit in the reserved slots without moving anything.
+  slot NULL (the Rust types are `Option`s for that reason), and never calls a callback it doesn't
+  know.
+* **Minor 1** (#294, #295) named 2 table slots and 4 descriptor slots (30 and 12 stay reserved):
+  `ClientExtApi::claim_channel` and `release`; `ClientExt::user_message`, `message_pre`,
+  `command_pre` and `server_cmd_pre` (§10, §11). An extension built for minor 0 loads unchanged.
+* Planned: `hud_set_hidden`, `hud_elements` and `menu_reply` (#314), minor 2.
 
 The webview spec says size and version checks are exact, "the same as plugin-api". That holds for
 `VERSION`; the reserved slots and `MINOR` are a port addition so that #294 and #295 don't break
@@ -122,6 +126,10 @@ extension gets nothing but `resume` and `shutdown`.
 | `suspend(reason)` / `resume()` | `ts_client::ext::suspend`/`resume`: a server's `block` with `suspend` (client-plugins.md §13.3, not built yet), the dev aid `ts_dev_extsuspend`; a server change resumes every suspended extension |
 | `server_changed(address)` | `HUD_Frame`, when the net API's server changes: `loopback`, `a.b.c.d:port`, or `""` on disconnect |
 | `shutdown()` | `HUD_Shutdown`, even while suspended |
+| `user_message(channel, data, len)` (minor 1) | a `TSExt` message on a channel the extension claimed (§10) |
+| `message_pre(msg, out, out_len) -> verdict` (minor 1) | each user message from the server, before the HUD (§11) |
+| `command_pre(cmd) -> verdict` (minor 1) | each client command the port registered, before it runs (§11) |
+| `server_cmd_pre(cmd, out, cap) -> verdict` (minor 1) | each command the port's code sends to the server (§11) |
 
 ## 5. Game events
 
@@ -139,7 +147,8 @@ extension gets nothing but `resume` and `shutdown`.
 
 ## 6. The table
 
-Every function is non-NULL. Strings are NUL-terminated; string results go into a caller's buffer
+Every function is non-NULL in this client (minor 1's are `Option`s in Rust only because a minor-0
+client leaves them NULL). Strings are NUL-terminated; string results go into a caller's buffer
 (cut to fit, always terminated) and the call returns the full length. Codes: `OK` 0, `NOT_FOUND`
 -1, `INVALID` -2, `UNAVAILABLE` -3, `SUSPENDED` -4, `EXISTS` -6, `REFUSED` -7, `FAILED` -8.
 
@@ -147,7 +156,9 @@ Every function is non-NULL. Strings are NUL-terminated; string results go into a
   extension's commands do nothing; `EXISTS` for a name another extension or any cvar has, while
   the engine itself refuses its own and the port's command names with a warning), `cmd_argc`,
   `cmd_argv`; `register_cvar` (`EXISTS` for any existing cvar: FWGS would reset it), `cvar_value`,
-  `cvar_string`, `set_cvar_value` (`Cvar_SetValue`); `client_cmd`, `server_cmd`; `screen_size`,
+  `cvar_string`, `set_cvar_value` (`Cvar_SetValue`); `client_cmd`, `server_cmd` (straight to the
+  engine: an extension's own commands to the server, the webview's `wv`, pass no
+  `server_cmd_pre`); `screen_size`,
   `mouse_position` (the virtual cursor while a menu or extension owns it); `gl_proc` and
   `renderer_kind` (GL, GLES or software, from FWGS's `r_refdll_loaded` or Steam's `IsHardware`);
   `game_dir`, `port_version`, `server_address`.
@@ -182,6 +193,10 @@ All need `ts_dev_scriptinput 1` and `sv_cheats 1`, like scripted input:
   `HUD_Key_Event` (and the extensions' `key_event`).
 * `ts_dev_extsuspend <name> <1|0> [reason]`: suspends or resumes an extension.
 * `ts_dev_extlist` (no gate): the loaded extensions.
+* `ts_dev_extlog 1` (a cvar, no gate): the interception hooks' decisions as `[ts ext]` console
+  lines: each presentation message passed, rewritten, or blocked or held (with its printable
+  text), each release, each blocked client command, and each command to the server as it was sent
+  or blocked (§11).
 
 ## 8. Deviations and gaps
 
@@ -193,17 +208,32 @@ The gaps against the webview spec (corpses, ducking, GLES state) are issue #306.
   client neither), so a dead player's body that is drawn and in view is listed. The webview spec
   says "alive".
 * **`LocalState` has no ducking flag** yet (the webview spec lists `ducking`).
-* **Not built here:** `TSExt` and `claim_channel`/`user_message` (#294); the interception hooks,
-  `hud_set_hidden`, `hud_elements` and `menu_reply` (#295); a server's `suspend`
-  (client-plugins.md §13.3).
+* **Not built here:** `hud_set_hidden`, `hud_elements` and `menu_reply` (#314); the plugin offer
+  flow and its cards (#299) and `cl_plugins_menu` (#311) (client-plugins.md); a server's
+  `suspend` (client-plugins.md §13.3).
+* **`svc_stufftext` can't be intercepted.** The engine runs a server's stuffed text itself; no
+  client library sees it, so there is no hook for it (the webview spec §7.6 lists it as
+  unreachable too). `server_cmd_pre` is about the other direction: commands the port sends.
+* **`command_pre` only blocks.** The webview spec's `Replace` for commands applies to commands to
+  the server (`server_cmd_pre`); a client command's verdict is pass or block, since the port
+  can't re-run the engine's tokenised command with other arguments. Its `chat_send` (`say`,
+  `say_team`) is the engine's command, not the port's, so it doesn't reach `command_pre` either.
+* **No raw `message_begin(TSExt)` guard on the server.** The webview spec §4.2 has the server
+  refuse an AMX Mod X `message_begin` of `TSExt` to clients without `_tsrs`. AMX Mod X writes
+  messages straight to the engine, past the game library, so only a metamod hook can (filed as
+  tsmod-amxx-rs#22). The plugin API's `ext_message` checks `_tsrs` itself.
+* **The port's hold timeout** is 1 s (`HOLD_MS`), a safety net over the webview's own 500 ms cap
+  per event.
 
 ## 9. Tests
 
-* Unit tests: `cargo test -p ts-client-ext-api` (the sizes are pinned), `-p ts-client ext` (gate,
-  events, edges, bearings, descriptor checks), `-p shared plugin_lib`, `-p goldsrc net_tests`,
-  `-p xtask client_plugins`.
+* Unit tests: `cargo test -p ts-client-ext-api` (the sizes are pinned, minor 0's included),
+  `-p ts-client ext` (gate, events, edges, bearings, descriptor checks; `ext::intercept`: what each
+  message and command allows, replacement checks, order, holds, timeouts, suspension, the queue
+  limit), `-p shared plugin_lib`, `-p shared protocol::ext`, `-p ts-server plugin_api::ext`,
+  `-p goldsrc net_tests`, `-p xtask client_plugins`.
 * **`cargo xtask client-plugins [fwgs fwgs-win ...]`** (dev profile only; FWGS roots, default
-  both; about 60 s on `fwgs`, 110 s on `fwgs-win`): installs the stub as `cl_dlls/tsmod_test`, its
+  both; roughly a minute per root, longer under Wine): installs the stub as `cl_dlls/tsmod_test`, its
   helper and `tsmod_test.files`, and the fixtures the loader must skip (another API version, a bad
   descriptor size, a refusal, the client library renamed (no export), `tsmod_unapproved` (the
   gate's denial), the other architecture, junk, another platform's name). `xtask plugin-approve`
@@ -218,3 +248,94 @@ The gaps against the webview spec (corpses, ducking, GLES state) are issue #306.
   `cl_plugins_verify`. xtask checks the loader's console lines, the helper's `spawned.txt`, and
   every check of `tsmod_client_test::CHECKS` in the stub's `report.txt` (in its data directory, so
   the Wine log buffer doesn't matter). Fixtures are removed afterwards and by every `install`.
+* **Minor 1 in the same run:** xtask also installs the server stub plugin (`crates/tsmod-test`)
+  as `dlls/tsmod_test`. With the bot in, the script turns on `ts_dev_extlog`, runs
+  `tsext_test_tsext` (the extension's `tsext_echo hello` to the server; the server plugin answers
+  on channel `test` with what `ext_message` and `client_port_version` said about the bot, a
+  broadcast, a payload too long and a bad channel, and also sends on an unclaimed channel), then
+  `special` three times with `tsext_test_arm block` (`command_pre` blocks it: no `_special` may
+  follow), `pass` (`server_cmd_pre` sees `_special`) and `rename` (a replacement `kill`, which the
+  port refuses), then says `tsext_block_me` (blocked), `tsext_hold_me` (held 20 frames, then
+  released; a second release is `NOT_FOUND`) and `tsext_pass_me`. The final `kill`'s `DeathMsg`
+  is rewritten (its weapon `tsext_rewritten`) while its `DEATH` event still comes. xtask checks
+  the stub's new checks and the `[ts ext]` lines, the kill feed's `with tsext_rewritten`, and the
+  replacement's warning.
+
+## 10. `TSExt` channels (minor 1, #294)
+
+`TSExt` is a port user message, registered after TS's 64 and before `TSPkg`
+(`shared::protocol::Msg::TsExt`, variable size; client-plugins.md §12): `string channel`, then the payload to the end of the
+message (`shared::protocol::ext`). The channel is 1 to 15 bytes of ASCII letters, digits, `_`,
+`-`, `.`; the whole message is at most 192 bytes (`MESSAGE_MAX`, the Steam engines'
+`MAX_USER_MSG_DATA`; FWGS allows 2048), so the payload is at most 192 minus the channel and its
+NUL: 184 bytes on `webview`, 176 on a 15-byte channel (the webview spec's figure).
+
+* **Server:** plugin API version 8's `ext_message(player, channel, data, len, flags)`
+  ([plugin-api.md](plugin-api.md) §13) sends one message to a player, or with player 0 to every
+  port client, `MSG_ONE` each (`ext_flag::UNRELIABLE` for `MSG_ONE_UNRELIABLE`). Only clients
+  whose userinfo has `_tsrs` get it: TS 3.0's client doesn't hook `TSExt`. A player who isn't a
+  port client (TS 3.0's client, a bot, HLTV) is `UNSUPPORTED`; a channel or payload that doesn't
+  fit is `INVALID`.
+* **No chunking in the port.** One message is one delivery, so a server can also send `TSExt`
+  itself (AMX Mod X's `message_begin(MSG_ONE, get_user_msgid("TSExt"))`). A longer body is the
+  channel's protocol to split: the webview's `op, msg_id, chunk` header (its spec §8.1).
+* **Client:** `claim_channel(ext, name)` gives a channel to an extension (`EXISTS` if another
+  has it; claiming one's own again is `OK`). Each `TSExt` goes to its channel's extension's
+  `user_message`, unless that extension is suspended. A message on an unclaimed channel, or a
+  malformed one, is dropped without a word. `TSExt` never reaches the HUD or `message_pre`.
+* **Client to server:** an extension sends with `server_cmd` (`wv ...` for the webview, its spec
+  §8.2); a server plugin gets it as a client command (`Plugin::client_command`, or AMX Mod X's
+  `register_clcmd`). Nothing new was needed for this direction.
+
+## 11. Interception (minor 1, #295)
+
+Three hooks see what passes between the server, the player and the HUD, in load order. Each call
+says what its verdict may do (`allow`: `BLOCK` 1, `REPLACE` 2, `DEFER` 4; 0 is observe-only) and
+the port ignores anything else, with a console warning once per extension and case. Verdicts:
+`PASS` 0, `BLOCK` 1, `REPLACE` 2, `DEFER` 3. The rules are the webview spec's state/display split
+(§7.6, §7.10), enforced by the port (`ts_client::ext::intercept`, pure and unit tested):
+
+| What | `allow` |
+|---|---|
+| `SayText`, `DeathMsg`, `TextMsg`, `HudText`, `TSMessage`, `Objective`, `ShowObj`, `ShowMenu` | block, replace, defer |
+| `TSPAward` | block, defer (the player it names can't change) |
+| `WeapPickup`, `AmmoPickup`, `ItemPickup` (TS 3.0 draws no pickup notices), `VGUIMenu`, `MOTD` | block |
+| every other message (state: health, weapons, scores, teams, timers, spectator, ...; effects: fades, shakes, blur, damage, slow motion, ...) | observe only |
+| `SrvSett`, and every port message after TS's 64 (`TSExt`, `TSPkg`) | never offered |
+| the port's client commands (`slot1`..`slot10`, `invnext`, `invprev`, `buy`, `special`, `cancelselect`, `+commandmenu`, `togglebrowser`, ...) | block |
+| input buttons (every `+`/`-` command), `ts_dev_*`, `ts_hud_selftest`, `cl_plugins*`, `tsrs_*`, extensions' own commands | observe only |
+| commands the port sends the server (`weapon_N`, `drop_N`, `menuselect N`, `jointeam`, buy items, `_special`, `usepowerup`, `lasclr_N`, `respawn`) | block, replace |
+| `tspkg` (the plugin offer replies), `vban`, `VModEnable` | observe only |
+
+* **Where:** `message_pre` from the HUD's message hooks (`hud::on_server_message`), before any
+  handling; `command_pre` from `goldsrc`'s one command trampoline (every `ClEngine::add_command`
+  name; the engine's own commands, `say` among them, never reach it); `server_cmd_pre` from
+  `ClEngine::server_cmd`, the one wrapper the port's code sends through.
+* **Order:** the first extension that blocks ends the run (later ones aren't asked). A
+  replacement is what the next extension sees. A defer pauses the run at that extension until it
+  calls `release(token, verdict, data, len)` with pass, block or replace; the run then goes on with
+  the next extension, which may defer again (a new token).
+* **State and display:** an intercepted message's state is applied when it comes, whatever the
+  verdict (`hud::handle` with `Parts::State`): for `DeathMsg` the scoreboard's dead marker
+  (`menus::on_message`) and the spectator's death notice; for every message the extensions'
+  `game_event`s (so a blocked or held `DeathMsg` still raises `DEATH`). Only the display (the HUD
+  element, the console line, the sound) waits for the verdict, and gets the replacement. A message
+  nothing changed is handled as before (`Parts::Both`).
+* **Arrival order:** a held message holds back the later messages of its kind (not other kinds):
+  they run through the hooks when they come, then wait to be displayed. At most 32 wait per kind
+  (`HOLD_QUEUE`); past that the oldest is displayed as it is. A hold older than 1 s (`HOLD_MS`)
+  passes (fail open), checked each frame.
+* **Replacements** must decode as their message, fit in 192 bytes, and keep who the message names
+  (`SayText`'s sender, `DeathMsg`'s killer and victim; `TSPAward` isn't replaceable); a server
+  command's must keep its name and hold no `;` or line break. Anything else counts as a block,
+  with a warning. A `message_pre` that returns `REPLACE` with a length outside its buffer blocks.
+* **Suspension** releases the extension's holds as passes and skips it in every run; a server
+  change (connect, disconnect) drops whatever is held.
+* **What a hook can't do (client-plugins.md §7.3):** approve anything, or stop the approval path.
+  `tspkg` replies and the `cl_plugins*` / `tsrs_*` commands are observe-only, a replacement can't
+  turn one command into another, the `TSPkg` offers won't reach `message_pre` (no port message
+  after TS's 64 does), and the extensions' own `client_cmd`/`server_cmd` were already possible
+  without hooks. Keeping the approval cards' input and drawing from extensions (`key_event`,
+  `redraw`) is the prompt's part (#297, client-plugins.md §7.3 "No cover").
+* **`release` from inside `message_pre`** finds nothing (`NOT_FOUND`): the holds are being
+  worked on. Release later (a frame, a command).

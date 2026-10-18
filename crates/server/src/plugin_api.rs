@@ -24,6 +24,7 @@
 
 pub mod bots;
 pub mod events;
+pub mod ext;
 pub mod frame;
 pub mod keys;
 pub mod world_info;

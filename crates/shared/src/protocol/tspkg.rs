@@ -44,7 +44,8 @@
 
 use std::fmt;
 
-/// The message's name, registered after TS's 64 messages (and variable length).
+/// The message's name: [`super::Msg::TsPkg`], registered after TS's 64 messages and `TSExt`
+/// (variable length).
 pub const NAME: &std::ffi::CStr = c"TSPkg";
 /// The most a GoldSrc user message may carry.
 pub const MAX_MESSAGE: usize = 192;

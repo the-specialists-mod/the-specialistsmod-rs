@@ -12,11 +12,9 @@ use std::cell::RefCell;
 
 static REASSEMBLER: Global<RefCell<Option<Reassembler>>> = Global(RefCell::new(None));
 
-pub fn hook() {
-    goldsrc::client::engine().hook_user_msg(shared::protocol::tspkg::NAME, msg_tspkg);
-}
-
-fn msg_tspkg(buf: &[u8]) {
+/// A `TSPkg` (`shared::protocol::Msg::TsPkg`, hooked with the HUD's messages; the extensions'
+/// interception hooks never see it).
+pub fn on_message(buf: &[u8]) {
     let got = REASSEMBLER.0.borrow_mut().get_or_insert_with(Reassembler::default).push(buf);
     let line = match got {
         Ok(None) => return,

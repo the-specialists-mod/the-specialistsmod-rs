@@ -35,8 +35,8 @@ const FIXTURES: [&str; 7] = ["test_badver", "test_badsize", "test_refuse", "noex
 
 /// The plugin checks the stub logs as `[tsmod_test] check <what> ok`. From `add_listener` on:
 /// plugin API version 5 (#198); from `players_count` on, version 6; from `attach_plugin` on,
-/// version 7 (#290).
-pub const CHECKS: [&str; 52] = [
+/// version 7 (#290); from `ext_message` on, version 8 (#294, #304).
+pub const CHECKS: [&str; 54] = [
     "data_dir",
     "map_name",
     "create_bot",
@@ -89,6 +89,8 @@ pub const CHECKS: [&str; 52] = [
     "attach_plugin",
     "detach_plugin",
     "snapshot_powers",
+    "ext_message",
+    "client_port_version",
 ];
 
 /// Removes every `tsmod_*` file xtask may have put in `dlls/` (a run that was cut short).

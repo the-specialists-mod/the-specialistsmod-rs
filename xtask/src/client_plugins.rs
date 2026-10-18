@@ -18,8 +18,13 @@
 //! (`TSRS_DEV_PLUGIN_PROMPT`, debug builds only) answers "Allow" and "Never" for. The hook
 //! records every box in [`PROMPT_LOG`].
 //!
+//! The server stub plugin (`crates/tsmod-test`) goes into `dlls/` as the other end of the
+//! extension API's `TSExt` checks (issue #294), and `ts_dev_extlog 1` logs the interception hooks'
+//! decisions (issue #295) as `[ts ext]` lines, which the checks read.
+//!
 //! The script joins ts_dojo, presses the stub's key (`ts_dev_key`), `+use` and `+attack`, puts a
-//! stopped bot in front of the host, starts the stub's helper through `verified_spawn`, suspends
+//! stopped bot in front of the host, sends `TSExt` both ways, arms the command hooks on `special`,
+//! says the chat lines the stub blocks, holds and passes, starts the stub's helper through `verified_spawn`, suspends
 //! and resumes the extension (`ts_dev_extsuspend`), kills the host and lists and re-verifies the
 //! plugins. The stub records every check of `tsmod_client_test::CHECKS` and writes them to its data
 //! directory's `report.txt`, which this reads with the helpers' `spawned.txt` (the engine log can
@@ -155,10 +160,11 @@ impl Ctx {
             say!("== client-plugins: needs the dev profile (the approval override and prompt hook are compiled into debug builds only)");
             return false;
         }
-        // The wrong-architecture fixture needs the other architecture's build too.
+        // The wrong-architecture fixture needs the other architecture's build too; the server
+        // stub plugin answers the client stub's `TSExt` echo.
         for t in Target::ALL.iter().filter(|t| roots.iter().any(|r| r.target().os == t.os)) {
             let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
-            c.current_dir(&self.repo).args(["build", "-p", "tsmod-client-test", "--target", t.triple]);
+            c.current_dir(&self.repo).args(["build", "-p", "tsmod-client-test", "-p", "tsmod-test", "--target", t.triple]);
             if !c.status().expect("cargo").success() {
                 exit(1);
             }
@@ -245,6 +251,9 @@ impl Ctx {
         let cl_dlls = gamedir.join("cl_dlls");
         say!("== {}: client extensions and plugin approval on ts_dojo (listen server, port {port})", root.name);
         self.install_client_fixtures(&t, &cl_dlls);
+        // The server stub plugin: the other end of the `TSExt` checks (`tsext_echo`).
+        let dlls = gamedir.join("dlls");
+        crate::copy(&self.test_plugin_artifact(&t), &dlls.join(format!("tsmod_test{}", crate::plugins::suffix(&t))));
         set_store_aside(&gamedir);
         let mut setup = Ok(());
         for name in STORE_APPROVED {
@@ -278,9 +287,10 @@ impl Ctx {
         let store = Store::load(&store_path(&gamedir)).map(|(s, _)| s).unwrap_or_default();
         remove_fixtures(&cl_dlls);
         remove_plugin_fixtures(&gamedir);
-        for line in
-            run.text.lines().filter(|l| l.contains("[ts] client extensions") || l.contains("[ts] client plugins") || l.contains("[tsmod_"))
-        {
+        crate::plugins::remove_fixtures(&dlls);
+        for line in run.text.lines().filter(|l| {
+            l.contains("[ts] client extensions") || l.contains("[ts] client plugins") || l.contains("[tsmod_") || l.contains("[ts ext]")
+        }) {
             say!("   | {}", line.trim_end());
         }
         let mut checks = client_plugin_checks(&run.text, &t, &report, &spawned);
@@ -303,6 +313,14 @@ fn script() -> String {
     cfg += &format!("+attack\nwait;wait;wait\n-attack\n{}", secs(0.5));
     cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}", secs(8.0));
     cfg += &format!("ts_tp 2 0 -1200 60 270 0\n{}ts_tp 1 0 -1344 60 90 0\n{}ts_face 1 2\n{}", secs(0.5), secs(1.0), secs(0.5));
+    // Minor 1: `TSExt` both ways (with the bot in, for the server's "not a port client"), the
+    // command hooks on the port's `special` and its `_special`, the chat hooks.
+    cfg += &format!("ts_dev_extlog 1\necho XTASK: tsext\ntsext_test_tsext\n{}", secs(1.0));
+    for arm in ["block", "pass", "rename"] {
+        cfg += &format!("tsext_test_arm {arm}\nspecial\n{}", secs(0.5));
+    }
+    cfg += "tsext_test_arm none\n";
+    cfg += &format!("say tsext_block_me\n{}say tsext_hold_me\n{}say tsext_pass_me\n{}", secs(1.0), secs(2.0), secs(1.0));
     cfg += &format!("echo XTASK: spawn\ntsext_test_spawn\n{}", secs(1.0));
     cfg += &format!("echo XTASK: suspend\nts_dev_extsuspend test 1\n{}tsext_test_report\n{}", secs(1.0), secs(0.5));
     cfg += &format!("ts_dev_extsuspend test 0\n{}", secs(0.5));
@@ -318,6 +336,8 @@ pub fn client_plugin_checks(text: &str, t: &Target, report: &str, spawned: &str)
     let other_os = Target::ALL.iter().find(|o| o.os != t.os).expect("two platforms");
     let line =
         |file: String, what: &str| text.lines().any(|l| l.contains("[ts] client extensions:") && l.contains(&file) && l.contains(what));
+    // A `ts_dev_extlog` line with both texts.
+    let ext = |what: &str, with: &str| text.lines().any(|l| l.contains("[ts ext] ") && l.contains(what) && l.contains(with));
     let mut c: Vec<(String, bool)> = vec![
         ("the development override announced".into(), text.contains("TSRS_DEV_CLIENT_EXT: approving test_refuse")),
         ("tsmod_test loaded from the store".into(), line(format!("loaded tsmod_test{sfx}"), "manual:test, approved by manual")),
@@ -336,6 +356,23 @@ pub fn client_plugin_checks(text: &str, t: &Target, report: &str, spawned: &str)
         ),
         ("the helper process ran".into(), spawned.contains("helper ran: from-tsmod_test")),
         ("the stub's report written".into(), !report.is_empty()),
+        ("the extension's command reached the server plugin".into(), text.contains("[tsmod_test] tsext_echo to #1: echo:hello")),
+        ("a blocked SayText not displayed".into(), ext("SayText blocked or held", "tsext_block_me") && !ext("released:", "tsext_block_me")),
+        (
+            "a held SayText displayed on release".into(),
+            ext("SayText blocked or held", "tsext_hold_me") && ext("SayText released:", "tsext_hold_me"),
+        ),
+        ("an untouched SayText passed".into(), ext("SayText passed", "tsext_pass_me")),
+        (
+            "a DeathMsg rewritten in the kill feed".into(),
+            ext("DeathMsg rewritten:", "tsext_rewritten") && text.contains("with tsext_rewritten"),
+        ),
+        ("a client command blocked".into(), ext("command special blocked", "")),
+        ("a server command passed".into(), ext("server command \"_special\" sent as \"_special\"", "")),
+        (
+            "a renamed server command refused".into(),
+            ext("server command \"_special\" blocked (a bad replacement)", "") && text.contains("changes the command's name"),
+        ),
         ("no panic or crash".into(), !(text.contains("PANIC") || text.contains("FATAL ERROR") || text.contains("Segmentation"))),
     ];
     for what in tsmod_client_test::CHECKS {
@@ -489,6 +526,21 @@ mod tests {
         ] {
             log += &format!("[ts] client extensions: {l}\n");
         }
+        for l in [
+            "SayText blocked or held (came as: Host: tsext_block_me)",
+            "SayText blocked or held (came as: Host: tsext_hold_me)",
+            "SayText released: Host: tsext_hold_me",
+            "SayText passed (came as: Host: tsext_pass_me)",
+            "DeathMsg rewritten: tsext_rewritten (came as: world)",
+            "command special blocked",
+            "server command \"_special\" sent as \"_special\"",
+            "server command \"_special\" blocked (a bad replacement)",
+        ] {
+            log += &format!("[ts ext] {l}\n");
+        }
+        log +=
+            "[tsmod_test] tsext_echo to #1: echo:hello bot=-3 all=1 big=-2 badch=-2 ver=3.0.8 (1)\nHost killed self with tsext_rewritten\n";
+        log += "[tsmod_test] warning: its replacement for server command _special changes the command's name: blocked\n";
         let report: String = tsmod_client_test::CHECKS.iter().map(|c| format!("check {c} ok\n")).collect();
         let checks = client_plugin_checks(&log, &t, &report, "helper ran: from-tsmod_test\n");
         assert!(checks.iter().all(|(_, ok)| *ok), "{checks:?}");
