@@ -212,6 +212,31 @@ impl Cvar {
         Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr())))
     }
 
+    /// [`Cvar::find`] without the engine's complaint when there's no such cvar: walks the cvar
+    /// list from `pfnGetFirstCvarPtr` (both engines; FWGS's `convar_t` starts with `cvar_t`'s
+    /// fields, `next` included), matching names case-insensitively as the engines do. FWGS's
+    /// `CL_CvarGetPointer` warns "client tried to get non-existent cvar" for every miss, which is
+    /// the normal case when checking a new name for a clash (issue #315). Falls back to
+    /// [`Cvar::find`] on an engine without the list.
+    pub fn lookup(name: &CStr) -> Cvar {
+        let Some(first) = engine().f.pfnGetFirstCvarPtr else { return Cvar::find(name) };
+        // SAFETY: the engine's function, no arguments; it returns the head of its cvar list or NULL.
+        let mut p = unsafe { first() };
+        // A bound in case the list were ever circular: no engine has this many cvars.
+        for _ in 0..65536 {
+            // SAFETY: list entries are engine-owned cvars that live for the process; `name` is
+            // NUL-terminated or NULL, and `next` NULL or the next entry. The client thread runs
+            // no engine code while this walks.
+            let Some(c) = (unsafe { p.as_ref() }) else { break };
+            // SAFETY: as above.
+            if !c.name.is_null() && unsafe { CStr::from_ptr(c.name) }.to_bytes().eq_ignore_ascii_case(name.to_bytes()) {
+                return Cvar(p);
+            }
+            p = c.next;
+        }
+        Cvar::NULL
+    }
+
     pub fn is_null(self) -> bool {
         self.0.is_null()
     }

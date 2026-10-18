@@ -375,6 +375,8 @@ pub fn client_plugin_checks(text: &str, t: &Target, report: &str, spawned: &str)
             "a renamed server command refused".into(),
             ext("server command \"_special\" blocked (a bad replacement)", "") && text.contains("changes the command's name"),
         ),
+        // Issue #315: the clash check behind add_command/register_cvar is quiet on FWGS.
+        ("no engine warning for a new command or cvar".into(), !text.contains("non-existent cvar \"tsext_")),
         ("no panic or crash".into(), !(text.contains("PANIC") || text.contains("FATAL ERROR") || text.contains("Segmentation"))),
     ];
     for what in tsmod_client_test::CHECKS {
@@ -543,6 +545,13 @@ mod tests {
         log +=
             "[tsmod_test] tsext_echo to #1: echo:hello bot=-3 all=1 big=-2 badch=-2 ver=3.0.8 (1)\nHost killed self with tsext_rewritten\n";
         log += "[tsmod_test] warning: its replacement for server command _special changes the command's name: blocked\n";
+        let warned = client_plugin_checks(
+            &(log.clone() + "Warning: CL_CvarGetPointer: client tried to get non-existent cvar \"tsext_test_cvar\"\n"),
+            &t,
+            "",
+            "",
+        );
+        assert!(warned.iter().any(|(w, ok)| w.starts_with("no engine warning") && !ok));
         let report: String = tsmod_client_test::CHECKS.iter().map(|c| format!("check {c} ok\n")).collect();
         let checks = client_plugin_checks(&log, &t, &report, "helper ran: from-tsmod_test\n");
         assert!(checks.iter().all(|(_, ok)| *ok), "{checks:?}");

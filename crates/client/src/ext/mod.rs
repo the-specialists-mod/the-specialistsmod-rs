@@ -565,7 +565,7 @@ pub fn host_add_command(id: ExtId, name: &str, f: ts_client_ext_api::CommandFn) 
         return INVALID;
     }
     let lower = name.to_ascii_lowercase();
-    if with(|s| s.commands.iter().any(|c| c.name == lower)) || !Cvar::find(&CString::new(name).unwrap_or_default()).is_null() {
+    if with(|s| s.commands.iter().any(|c| c.name == lower)) || !Cvar::lookup(&CString::new(name).unwrap_or_default()).is_null() {
         return EXISTS;
     }
     with(|s| s.commands.push(Command { name: lower, ext: id, f }));
@@ -591,7 +591,7 @@ pub fn host_register_cvar(id: ExtId, name: &str, value: &str, flags: i32) -> i32
         return INVALID;
     }
     let lower = name.to_ascii_lowercase();
-    if !Cvar::find(&CString::new(name).unwrap_or_default()).is_null() || with(|s| s.commands.iter().any(|c| c.name == lower)) {
+    if !Cvar::lookup(&CString::new(name).unwrap_or_default()).is_null() || with(|s| s.commands.iter().any(|c| c.name == lower)) {
         return EXISTS;
     }
     Cvar::register(leak(name), leak(value), flags);
@@ -600,7 +600,7 @@ pub fn host_register_cvar(id: ExtId, name: &str, value: &str, flags: i32) -> i32
 
 /// `ClientExtApi::set_cvar_value`.
 pub fn host_set_cvar(name: &CStr, value: f32) -> i32 {
-    if Cvar::find(name).is_null() {
+    if Cvar::lookup(name).is_null() {
         return NOT_FOUND;
     }
     engine().cvar_set(name, value);

@@ -360,12 +360,12 @@ unsafe extern "C" fn register_cvar(id: ExtId, name: *const c_char, value: *const
 
 unsafe extern "C" fn cvar_value(name: *const c_char) -> f32 {
     // SAFETY: the table's contract for string arguments.
-    unsafe { arg(name) }.map_or(0.0, |n| Cvar::find(n).value())
+    unsafe { arg(name) }.map_or(0.0, |n| Cvar::lookup(n).value())
 }
 
 unsafe extern "C" fn cvar_string(name: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
     // SAFETY: the table's contract for string arguments.
-    let s = unsafe { arg(name) }.and_then(|n| Cvar::find(n).string()).map(|s| s.to_bytes().to_vec()).unwrap_or_default();
+    let s = unsafe { arg(name) }.and_then(|n| Cvar::lookup(n).string()).map(|s| s.to_bytes().to_vec()).unwrap_or_default();
     // SAFETY: the table's contract for buffers.
     unsafe { put_bytes(buf, len, &s) }
 }

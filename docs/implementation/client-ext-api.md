@@ -156,7 +156,10 @@ client leaves them NULL). Strings are NUL-terminated; string results go into a c
   extension's commands do nothing; `EXISTS` for a name another extension or any cvar has, while
   the engine itself refuses its own and the port's command names with a warning), `cmd_argc`,
   `cmd_argv`; `register_cvar` (`EXISTS` for any existing cvar: FWGS would reset it), `cvar_value`,
-  `cvar_string`, `set_cvar_value` (`Cvar_SetValue`); `client_cmd`, `server_cmd` (straight to the
+  `cvar_string`, `set_cvar_value` (`Cvar_SetValue`). These look cvars up with `Cvar::lookup`, a
+  walk of the engine's cvar list from `pfnGetFirstCvarPtr`, not `pfnGetCvarPointer`: FWGS's
+  `CL_CvarGetPointer` warns "client tried to get non-existent cvar" for every miss, which is the
+  normal answer to a clash check (#315). `client_cmd`, `server_cmd` (straight to the
   engine: an extension's own commands to the server, the webview's `wv`, pass no
   `server_cmd_pre`); `screen_size`,
   `mouse_position` (the virtual cursor while a menu or extension owns it); `gl_proc` and
