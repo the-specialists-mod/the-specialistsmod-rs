@@ -17,6 +17,7 @@ mod status;
 pub(crate) mod statusbar;
 pub mod text;
 mod tfc;
+mod tspkg;
 mod version;
 pub mod vgui;
 mod weapons;
@@ -615,6 +616,8 @@ pub fn init() {
     e.hook_user_msg(c"StatusIcon", msg_status_icon);
     tfc::hook();
     statusbar::hook();
+    // Port addition: the plugin offers' and version notices' message (issue #298).
+    tspkg::hook();
     register_commands();
     // `CHudGeiger::Init` (`0x1001f450`) seeds the CRT's `rand`: `srand(time(NULL))`.
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32);

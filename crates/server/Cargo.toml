@@ -10,12 +10,17 @@ name = "ts_server"
 
 [dependencies]
 goldsrc = { path = "../goldsrc", features = ["server"] }
+# Checks offered client plugin packages before offering them (`plugin_offers`).
+plugin-pkg = { path = "../plugin-pkg" }
 semver = { version = "1", default-features = false, features = ["std"] }
 shared  = { path = "../shared" }
 ts-gameplay = { path = "../gameplay" }
 ts-plugin-api = { path = "../plugin-api" }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 
 # Tests only: the core's tests run the 3.0 plugin's movement and gun rules (its fixture's `pm`
 # and `gun`). The library never links a ruleset (docs/implementation/gameplay-plugins.md).
 [dev-dependencies]
 ts30-gameplay = { path = "../ts30" }
+tempfile = "3"

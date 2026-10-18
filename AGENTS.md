@@ -139,6 +139,13 @@ cargo xtask relaunch [--xvfb] [fwgs fwgs-win]
                                           # quit and inform, next start, passworded server; kills the
                                           # root's games it started, so run it alone (~5 min per root,
                                           # not in all; docs/validation.md §2.r)
+cargo xtask tspkg [<root>...]             # server offers of client plugins on each Linux root's dedicated server:
+                                          # plugin_offers.toml and the package checks, TSPkg to the FWGS port client,
+                                          # tspkg replies, the required-offer kick, op 5; nothing to clients that
+                                          # don't hook TSPkg (not in all)
+cargo xtask plugin-offer [--required] <tspkg>
+                                          # check a built package, write its .manifest.toml/.sig/.cert siblings,
+                                          # print its plugin_offers.toml entry
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask steam [listen|<server-root>]  # the Steam HL25 client (Half-Life/ts): play's scenes + changelevel + the
                                           # Steam-only regressions on a listen server (~7 min), or joining
@@ -192,6 +199,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   `ts_dev_extsuspend <name> <1|0>` suspends a client extension (both need `ts_dev_scriptinput 1`).
   Client extensions load only if approved; debug builds also honour `TSRS_DEV_CLIENT_EXT=<names>`
   (docs/implementation/client-ext-api.md §3).
+- `ts_dev_tspkg 1` (server) counts every port client as hooking `TSPkg`: builds between releases
+  report the last release's version, below `TSPKG_SINCE` (docs/implementation/client-plugins.md §12).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

@@ -28,7 +28,9 @@ the original.
 * **User messages:** `shared::protocol::MESSAGES` lists all 64 in TS registration order with TS
   sizes. The server registers them in that order in `GameInit` (`messages::register_all`). Payload
   layouts follow decomp `server/architecture.md` §3.2 and `client/architecture-hud.md` §3. Do not
-  rename, reorder or resize them.
+  rename, reorder or resize them. The port's own `TSPkg` (client plugin offers,
+  `shared::protocol::tspkg`, `implementation/client-plugins.md` §6.2) is registered after them, and
+  goes only to port clients that hook it (`_tsrs` at or above `port::TSPKG_SINCE`; §12 there).
 * **Events:** the same `events/*.sc` names and the same `fparam`/`iparam`/`bparam` meanings
   (decomp `server/weapons.md` §6.1, `client/rendering-effects-prediction.md` §4.2).
 * **Networked fields** (`delta.lst` is TS's original file, byte for byte; both engines accept its two missing commas):
@@ -101,7 +103,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, `rules::install` (installs the rules, the multiplayer voice icon, queues the server config), soundent and body queue, sentences and texture types, then `precache::{w_precache, client_precache, ts_precache, world_sounds_and_gibs}` (TS's map-wide precaches in TS's order, so model/sound/event indices match), light styles, `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
-| `ClientCommand` | `commands::client_command`: the `tsmod_*` plugins first (one may swallow it), then weapons, stunt, rules, the active bot backend, in that order |
+| `ClientCommand` | `commands::client_command`: the `tsmod_*` plugins first (one may swallow it), then the port's `tspkg` replies (`plugin_offers`), then weapons, stunt, rules, the active bot backend, in that order |
 | `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3), through `ham` |
 | `StartFrame` | `bot_backend::start_frame` (the quota, then the active backend's bots: for native, each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), the `tsmod_*` plugins' `start_frame` (a plugin backend runs its bots here), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots, and the plugins' weapon/ammo callbacks) |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |

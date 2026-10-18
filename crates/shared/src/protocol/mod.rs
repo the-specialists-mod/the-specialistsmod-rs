@@ -9,6 +9,7 @@ pub mod hud_wire;
 pub mod port;
 pub mod rules;
 pub mod stunt;
+pub mod tspkg;
 pub mod weapons;
 
 use std::ffi::CStr;

@@ -85,6 +85,7 @@ cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath,
 cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
 cargo xtask version [<root>...]         # the port client's version check at connect, Linux roots one by one (~1.5 min each, §2.z)
 cargo xtask relaunch [--xvfb] [fwgs fwgs-win]  # restart and reconnect end to end, one root after the other (~5 min each, §2.r)
+cargo xtask tspkg [<root>...]           # server offers of client plugins (TSPkg, tspkg, op 5), Linux roots one by one (§2.z2)
 cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
@@ -335,6 +336,29 @@ its platform (`FwgsLinux` for `fwgs`, `FwgsWindows` for `fwgs-win`) in the same 
 records the run here; remove it if the scenario fails later. Not covered yet: Steam HL25
 (`steam://run`, #307), the real tsmod-launcher with port update and downgrade (#308), and the
 card windows themselves, which the e2e hook answers without opening (#309).
+### 2.z2 Plugin offers (`cargo xtask tspkg`)
+
+`cargo xtask tspkg [roots...]` (issue #298, `xtask/src/tspkg.rs`, `implementation/client-plugins.md`
+§6, §12, §13.1): on each Linux root the dedicated server runs TS 3.0 mode with a signed stub
+package `xtask_stub-0.1.0.tspkg` written to `<root>/ts/plugins/` (with its siblings, by the same
+code as `cargo xtask plugin-offer`), a `plugin_offers.toml` offering it as required, and a second
+offer of the same file under another id with a wrong hash. The port's FWGS client joins:
+
+1. With `sv_cheats 1`, `ts_dev_tspkg 1` (a build between releases reports the last release, below
+   `TSPKG_SINCE`) and `sv_plugin_required_kick 1`: the server logs `offering xtask_stub` and
+   `not offering xtask_bad`, sends the offer, and the client prints it with the URL built from
+   `sv_downloadurl`. The client script sends `cmd tspkg xtask_stub 0.1.0 offered`, then `denied`;
+   the server logs both and kicks with "requires the client plugin xtask stub 0.1.0 (<homepage>)".
+2. `sv_client_version ">=99.0.0"`, `sv_plugin_check_time 3`: the client is let in
+   (`[ts] version: let in`), gets op 5 and prints the version the server needs, and is kicked
+   with the `[tsrs:>=99.0.0]` tag.
+3. Without `ts_dev_tspkg`: the offer is still checked, but the client (below `TSPKG_SINCE`, like
+   an older port client) gets nothing, and joins. On the Steam engines, when
+   `~/games/xash_win_orig` exists, the original client gets no offer and joins.
+
+Client logs go to `target/version-client-<root>-tspkg-*.log`. Not in `all`: run it after changes
+to `plugin_offers`, `shared::protocol::tspkg` or the connect path. The client's offer flow (cards,
+downloads) is #299's, with its own e2e (§11 of client-plugins.md).
 
 ## 3. Results
 

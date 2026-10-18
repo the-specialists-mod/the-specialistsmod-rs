@@ -4,8 +4,10 @@ Status: draft specification, 2026-10-17. Built so far: the pure parts (§3, §5,
 manifests, signatures, the store and verification) in `crates/plugin-pkg` (issue #296); the
 client extension API and its loader with the approval-gate seam ([client-ext-api.md](client-ext-api.md),
 issue #293); the port client's version check (§13.1, issue #300); and the port side of restart and
-reconnect (§13.5, issue #301; the launcher side is tsmod-launcher #4 and #5). The loader's use of the
-store, the offers and the cards aren't built yet.
+reconnect (§13.5, issue #301; the launcher side is tsmod-launcher #4 and #5). The server's offers (§6.1, §6.2, §6.5, §12, op 5 of §13.1;
+`ts_server::plugin_offers`, `shared::protocol::tspkg`) are built (issue #298); the client only
+prints what it receives. The loader's use of the store, the client's offer flow and the cards
+aren't built yet.
 
 The client library has no plugin loading today. The server loads `tsmod_*` libraries from
 `dlls/` ([plugin-api.md](plugin-api.md) §1.2), but nothing equivalent exists on the client. This
@@ -91,8 +93,10 @@ files/...             the plugin's files, paths as in the manifest
   executable (on Linux). Sizes are enforced while reading, so an entry can't inflate past its
   manifest size.
 * The manifest and its signature are also served next to the package, as
-  `<id>-<version>.manifest.toml` and `.manifest.sig`, so the client can show details before it
-  downloads anything (§6.2).
+  `<id>-<version>.manifest.toml` and `.manifest.sig`, and its countersignature as
+  `.publisher.cert` when it has one (the card shows the trust level, §3.3), so the client can show
+  details before it downloads anything (§6.3). `cargo xtask plugin-offer` writes them, and the
+  server refuses to offer a package whose siblings are missing or differ from its own files.
 * The `.tspkg` extension isn't on either engine's list of blocked download extensions. The port
   downloads packages itself, though, not through the engine (§6.3).
 
@@ -324,36 +328,89 @@ so every rebuild prompts again. Developers can pre-approve a build instead (§11
   note = "Needed for the stats and vote pages."   # ≤ 64 bytes, shown on the card
   ```
 
-  `xtask` gets `cargo xtask plugin-offer <tspkg>`, which prints the entry for a built package.
-* **When offers are sent:** on `ClientPutInServer`, only to port clients (§12). Offers also go
-  out on demand, with `sv_plugin_offer <#userid|name|all> <id>` or the plugin API's
-  `offer_client_plugin(edict, id)` (the next plugin-api version; tsmod-amxx-rs can expose it as a
-  native).
+  `cargo xtask plugin-offer [--required] <tspkg>` checks a built package, writes its siblings
+  (§3.1) and prints the entry.
+  * **URLs:** a relative `url` is the package's path under the game directory, which is what
+    FastDL serves under `sv_downloadurl`. client.dll can't read the engine's download URL, so the
+    server sends the full URL: `sv_downloadurl` (trailing `/` dropped), `/`, the path, with the
+    `fastdl` flag (§6.2). A relative offer isn't sent while `sv_downloadurl` is empty or isn't
+    `http(s)://`, and the log says so. An absolute `url` must be `https://`, and needs
+    `file = "<path under the game directory>"`, the same package on the server's disk, so the
+    server can check it.
+  * **Checks:** at each map start, and on `sv_plugin_offers reload`, the server reads the file and
+    checks every offered package before offering it: the size and SHA-256 must be the offer's, the
+    package must open with its entries exactly its manifest's files and every file's size and hash
+    matching, the manifest must name the offer's id and version, a signature must check
+    (`plugin_pkg::builtin_roots` for "verified"), and the siblings must be byte-identical to the
+    package's own. A package that fails isn't offered; the log names the reason. Results are
+    cached on the package's path, size and modification time, so an unchanged package isn't
+    hashed again at every map.
+  * **Parsing** is strict: an unknown key, or a file that isn't TOML, gives no offers. A bad
+    entry (an id that isn't `[a-z0-9_-]{1,32}`, a version that isn't semver or is over 16 bytes, a
+    size over 32 bits, a note over 64 bytes or with control characters, a `url` that doesn't end
+    with `.tspkg`, a second offer for the same id) is dropped with its reason. More than 4 offers
+    are kept with a warning: a client shows at most 4 per connection (§7.3).
+* **When offers are sent:** on every `ClientPutInServer` (so again after each map change; the
+  client answers `have` or remembers a refusal for the connection), only to clients that hook
+  `TSPkg` (§12). Offers also go out on demand, with `sv_plugin_offer <#userid|name|all> <id>`;
+  `sv_plugin_withdraw <#userid|name|all> <id>` sends op 2 for one sent earlier, and
+  `sv_plugin_offers` lists the offers and their checks. The plugin API's
+  `offer_client_plugin(edict, id)` waits for the next plugin-api version (#304; tsmod-amxx-rs can
+  expose it as a native). Until then an AMX Mod X plugin can run `sv_plugin_offer` and sees the
+  `tspkg` client command before the game does.
 * **Required plugins:** with `sv_plugin_required_kick 1` (default 0), a player who answers
   `denied`, `unsupported` or `failed` to a required offer is kicked. The kick reason names the
-  plugin and its homepage. Without it, the plugin API reports the state and plugins decide.
-* **What the server learns:** the client's state for each offer, through `tspkg` (§6.5) and the
-  plugin API event `client_plugin_state(edict, id, state)`.
+  plugin and its homepage ("This server requires the client plugin <name> <version>
+  (<homepage>).", from the package's manifest). Without it, the plugin API reports the state and
+  plugins decide.
+
+| cvar / command (server, port additions) | default | meaning |
+|---|---|---|
+| `sv_plugin_required_kick` | 0 | 1 kicks a player who refuses a required offer |
+| `sv_plugin_check_time` | 15 | seconds before the op 5 kick (§13.1); #302 uses it for its grace period |
+| `ts_dev_tspkg` | 0 | dev aid, with `sv_cheats 1`: every port client counts as hooking `TSPkg` (§12) |
+| `sv_plugin_offer <#userid\|name\|all> <id>` | | offers `id` now |
+| `sv_plugin_withdraw <#userid\|name\|all> <id>` | | op 2 for an offer sent earlier |
+| `sv_plugin_offers [reload]` | | lists the offers, their checks, the blocks and the policy |
+* **What the server learns:** the client's state for each offer, through `tspkg` (§6.5), logged as
+  `[ts] tspkg: <player>: <id> <version> <state> [reason]`, and the plugin API event
+  `client_plugin_state(edict, id, state)` (with the next API version, #304).
 
 ### 6.2 The `TSPkg` user message
 
 The port registers `TSPkg` after TS's 64 messages, so TS's registration order is unchanged
 (design.md §2).
 
+An offer can be longer than GoldSrc's 192-byte user message limit (ReHLDS stops the server with a
+`Host_Error` past it), so every body goes in chunks, each one `TSPkg` message, as the webview
+spec's `TSExt` framing does (open question 1):
+
 ```
-byte    op            1 offer, 2 withdraw (ops 3 and 4: §13.3)
+byte    op            1 offer, 2 withdraw, 3 require, 4 block, 5 port_version (3 to 5: §13.3)
+byte    msg_id        the same on every chunk of one body; wraps at 256
+byte    chunk         index from 0; high bit (0x80) set on the last chunk
+...     body          at most 189 bytes of the body
+```
+
+The server sends a body's chunks back to back in the reliable stream, so the client keeps one
+body in progress: a chunk for another `msg_id` or op, or out of order, drops it. A body has at most
+4 chunks. The op 1 body:
+
+```
 string  id            ≤ 32
 string  version       ≤ 16
-long    size          package bytes
+long    size          package bytes (unsigned)
 byte×32 sha256        of the .tspkg
-byte    flags         1 required
-string  url           ≤ 96; relative to sv_downloadurl, or absolute https://
+byte    flags         1 required, 2 fastdl (the URL is sv_downloadurl plus the offer's path,
+                      and may be plain http://)
+string  url           ≤ 255; the full URL of the .tspkg
 string  note          ≤ 64
 ```
 
-That is at most 249 bytes, over GoldSrc's 192-byte user message limit. So `note` is sent only
-when `url` is relative and short enough; the client checks the total fits. Open question 1
-covers chunking it instead.
+Op 2 `withdraw` is `string id, string version`. Strings are NUL-terminated, without control or
+bidirectional-override characters; ids, versions and URLs are printable ASCII without spaces,
+quotes or `;`, since they go back in `tspkg` replies. `shared::protocol::tspkg` has the encoder
+(`Message::encode`) and the client's decoder (`Reassembler`, `Message::decode`).
 
 ### 6.3 Client flow
 
@@ -363,7 +420,8 @@ covers chunking it instead.
    * it answers `have` when the same id, version and package hash is already approved, and loads
      it if it isn't loaded yet (scope permitting).
 2. **Fetch the manifest** and its signature (`<url without .tspkg>.manifest.toml` / `.sig`, at
-   most 64 KB), on a worker thread. Then check:
+   most 64 KB, and `.publisher.cert` when the package is countersigned), on a worker thread.
+   Then check:
    * the signature (§3.3);
    * that the id and version match the offer;
    * that there's a library for this platform; if not, answer `unsupported`.
@@ -383,8 +441,8 @@ covers chunking it instead.
    Any failure answers `failed <reason>` and leaves nothing behind but the log line.
 
 * **HTTP:** a worker thread in `client.dll` does the fetching, with `ureq` and `rustls` and
-  redirects limited to 3. HTTPS is required for absolute URLs. A relative URL uses
-  `sv_downloadurl` as it is, which is often plain HTTP. That's acceptable because integrity
+  redirects limited to 3. HTTPS is required unless the offer has the `fastdl` flag: then the URL
+  is the server's `sv_downloadurl` plus a path, which is often plain HTTP. That's acceptable because integrity
   comes from the offer's hash and the signature, not the transport. Unsigned packages over plain
   HTTP are always refused. The cost is a TLS stack in `client.dll` (open question 2).
 * **Cancel:** disconnecting or pressing Cancel stops the download and deletes the staging file.
@@ -407,10 +465,16 @@ tspkg <id> <version> <state> [reason]
 state: have | offered | downloading | installed | loaded | denied | blocked | unsupported | failed
        | suspended | restart        (§13.3)
 tspkg list <id>@<version> ...       every loaded plugin, sent once after the first TSPkg (§13.2)
+tspkg list                          ends the list (a client with no plugins sends only this)
 ```
 
 * `denied` covers both "Not now" and "Never". The server isn't told which.
-* The server rate-limits `tspkg` (16 per 10 seconds) and ignores ids it didn't offer.
+* `reason` is the rest of the line, at most 64 bytes; the client quotes it, without quotes or `;`.
+  `tspkg list` lines stay under 128 bytes and add to the list until the bare `tspkg list`.
+  `shared::protocol::tspkg` has `Reply::command` and `list_commands` (client) and `Reply::parse`
+  (server).
+* The server rate-limits `tspkg` (16 per 10 seconds per client, a sliding window) and ignores ids
+  it didn't offer this connection, `tsrs` unless it sent op 5, and `tspkg list` before any `TSPkg`.
 
 ## 7. Approval dialogs
 
@@ -544,12 +608,18 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
   * downgrade detection.
 * **Port unit tests:**
   * the offer state machine and the offer queue and limits;
-  * the `TSPkg` encoding within 192 bytes;
-  * `tspkg` parsing and rate limits on the server.
+  * the `TSPkg` encoding within 192 bytes: every op's round trip through the chunks, the largest
+    bodies, bad input (`shared::protocol::tspkg`);
+  * `tspkg` parsing and rate limits on the server, `plugin_offers.toml` parsing and the package
+    checks (`ts_server::plugin_offers`).
   * the version policies (`any`, `same_minor`, `exact`, requirements) against `parse_version`;
   * `match` rules, `[[block]]` and `unlisted` decisions;
   * the grace period;
   * the refusal text fitting the reject buffer.
+* **Server e2e (`cargo xtask tspkg`, validation.md §2.z2):** the server's side of 2 to 5 below,
+  with the FWGS port client printing what it receives and its replies scripted: the offers and
+  their checks, `tspkg` replies and the required-offer kick, op 5 and its kick, and no `TSPkg` to
+  clients that don't hook it.
 * **e2e (`cargo xtask e2e`, FWGS root with a dedicated server):**
   1. Approve a stub plugin with `plugin-approve`, start, and check it loads. Change one byte, add
      an extra file, delete a file; each must stop it loading, and the log must name the change.
@@ -602,10 +672,15 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
 
 * `TSPkg` (and the webview spec's `TSExt`) are new user messages. TS 3.0's client doesn't hook
   them, and a GoldSrc client can fail on a user message it hasn't hooked ("UserMsg: Not Present
-  on Client"). So the server sends them only to clients known to be the port: those whose
-  userinfo carries `_tsrs` (`shared::protocol::port::USERINFO_KEY`), which the server already
-  reads in `ClientConnect`. The client takes `TSPkg` support from the port server's version
-  (`SrvSett` keys 5–7), so neither side needs a new discovery channel.
+  on Client"). So the server sends them only to clients known to hook them: those whose userinfo
+  carries `_tsrs` (`shared::protocol::port::USERINFO_KEY`), which the server already reads in
+  `ClientConnect`, with a version at or above `port::TSPKG_SINCE` (3.0.9, the first release whose
+  client hooks `TSPkg`). Port clients up to 3.0.8 carry `_tsrs` but don't hook it, and a `_tsrs`
+  that isn't a version gets nothing either. Bots and HLTV get nothing. Builds between releases
+  report the last release's version, so the dev aid `ts_dev_tspkg 1` (with `sv_cheats 1`) counts
+  every port client with a readable version (`cargo xtask tspkg` uses it). The client takes
+  `TSPkg` support from the port server's version (`SrvSett` keys 5–7), so neither side needs a
+  new discovery channel.
 
   Original clients never get either message, and design.md §2's contract holds.
 * The registration order of TS's 64 messages doesn't change. New messages are appended after
@@ -626,17 +701,22 @@ a refusal path in `ClientConnect` (`rules::client_connect`, which returns the en
 reason). How a mismatch is handled depends on how old the client is:
 
 * **Clients that understand `TSPkg`** (`_tsrs` at or above the first port release with it,
-  `TSPKG_SINCE` in `shared::protocol::port`): the server lets them in and sends op 5
-  `port_version` (§13.3). The client then shows the update card, with the launcher's help where
-  it can (§13.5). The server kicks with the refusal text if the client hasn't left within
-  `sv_plugin_check_time`.
+  `TSPKG_SINCE` in `shared::protocol::port`, 3.0.9; §12): the server lets them in (logging
+  `[ts] version: let in <name> ... then kick: <reason>`) and, when they're put in the server,
+  sends op 5 `port_version` (§13.3) with the refusal tag's requirement and
+  `sv_client_version_url` (or `tsmod.org`). The client then shows the update card, with the
+  launcher's help where it can (§13.5); until that card exists (#299, #301) it prints the line
+  `[ts] version: this server needs The Specialists port <requirement>; get it via the TS launcher
+  or <url>`. The server kicks with the refusal text if the client hasn't left within
+  `sv_plugin_check_time` (default 15 s; `ts_server::rules::client_version::decide`,
+  `plugin_offers`). A map change reconnects the client, which starts this again.
   This path exists because `client.dll` never sees a `ClientConnect` refusal: the engine shows
   the reason, and the client can't act on it.
 * **Older port clients, and TS 3.0's client** (with `sv_client_require_port 1`): refused at
   `ClientConnect` with the text below. They can't receive `TSPkg` (§12).
 
-  Until `TSPkg` ships (#298), `TSPKG_SINCE` doesn't exist and every mismatching port client takes
-  this path (issue #300 implements only it, `ts_server::rules::client_version`).
+  Port clients up to 3.0.8, a `_tsrs` that isn't a version, and a requirement over op 5's 96
+  bytes take this path.
 
 | cvar (server, port addition) | default | meaning |
 |---|---|---|
@@ -695,7 +775,7 @@ plugins that may not be used on the server:
 id = "webview"
 version = "0.2.0"
 required = true
-match = "compatible"      # exact | compatible | any | a semver requirement (">=0.2.0, <0.4")
+match = "compatible"      # exact | compatible (the default) | any | a semver requirement (">=0.2.0, <0.4")
 # ... url, sha256, size, note as in §6.1
 
 [[block]]
@@ -709,7 +789,12 @@ unlisted = "allow"        # allow (default) | suspend | kick: plugins in neither
 ```
 
 * `compatible` means the same major version for `1.0.0` and later, and the same minor version
-  before `1.0.0`, as Cargo's caret rule does. `exact` means the offered version only.
+  before `1.0.0`, as Cargo's caret rule does. `exact` means the offered version only. Without
+  `match`, an offer is `compatible`.
+* The server parses and keeps `match`, `[[block]]` (`id` a plugin id, `manual:<name>` or
+  `manual:*`; `versions` a semver requirement up to 96 bytes; `reason` up to 64 bytes) and
+  `[policy]`, and records each client's `tspkg list` (#298, `plugin_offers::config`); enforcing
+  them (§13.3) is #302.
 * **What the client reports:** after the first `TSPkg` from the server, the client sends
   `tspkg list` naming every loaded plugin and version, chunked like other commands under 128
   bytes. A client that sends nothing within `sv_plugin_check_time` (default 15 s) is treated as
@@ -731,9 +816,10 @@ For each loaded plugin the client reports, and each required offer, the server d
 New `TSPkg` ops (same framing as §6.2):
 
 ```
-op 3 require   id, version requirement (≤ 48), flags (1 required)
-op 4 block     id, version requirement, byte action (1 suspend, 2 kick), string reason (≤ 64)
-op 5 port_version   version requirement (≤ 48), string url (≤ 96); id is "tsrs"
+op 3 require   id, version requirement (≤ 96), flags (1 required)
+op 4 block     id (≤ 40: a plugin id, manual:<name> or manual:*), version requirement,
+               byte action (1 suspend, 2 kick), string reason (≤ 64)
+op 5 port_version   id ("tsrs"), version requirement (≤ 96), string url (≤ 255)
 ```
 
 * **Suspend:** the port stops calling the plugin's callbacks while the player is on this server:
@@ -1030,8 +1116,9 @@ open question 3.
 
 ## 14. Open questions
 
-1. `TSPkg` can exceed 192 bytes with a long URL and note. Should it chunk, as the webview `TSExt`
-   framing does, or move the note into the manifest?
+1. ~~`TSPkg` can exceed 192 bytes with a long URL and note. Should it chunk, as the webview
+   `TSExt` framing does, or move the note into the manifest?~~ Resolved (#298): it chunks (§6.2),
+   which also lets the server send the full URL.
 2. **The TLS stack:** `ureq` and `rustls` add about 1.5–2 MB to each `client.dll`. The
    alternative is the engine's own download (`precache_generic` plus `sv_downloadurl`), which
    accepts `.tspkg` names. But it runs at connect time, blocks joining for large packages, and
@@ -1054,7 +1141,7 @@ open question 3.
 2. Client: the loader with start-up verification and the SDL prompt, hand-installed libraries,
    `cl_plugins_*` commands, `xtask plugin-approve`. Depends on the client extension API.
 3. Server: `TSPkg` (sent only to `_tsrs` clients), `plugin_offers.toml`, `sv_plugin_offer`, `tspkg` replies
-   and the plugin API additions.
+   and the plugin API additions. Built (#298), but for the plugin API additions (#304).
 4. Client: the offer flow, downloads, the VGUI cards and their safeguards (§7.3), late loading,
    e2e.
 5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`. Also:

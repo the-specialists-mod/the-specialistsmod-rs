@@ -49,6 +49,15 @@
 //!                                                 client and ts-launcher-fake: IPC, relaunch
 //!                                                 arguments, self-relaunch, quit and inform, the
 //!                                                 next start (see relaunch.rs; not in `all`)
+//! cargo xtask tspkg   [--release] [<root>...]
+//!                                                 server offers of client plugins (TSPkg, tspkg
+//!                                                 replies, op 5) on each Linux root's dedicated
+//!                                                 server with the FWGS port client (see tspkg.rs;
+//!                                                 not in `all`)
+//! cargo xtask plugin-offer [--required] <tspkg>   check a built package, write the files a client
+//!                                                 fetches before it (.manifest.toml, .manifest.sig,
+//!                                                 .publisher.cert) beside it, and print its
+//!                                                 plugin_offers.toml entry
 //! cargo xtask all     [--release]                 test, then play, then steam (only when Steam is
 //!                                                 running and logged in; skipped with a note otherwise)
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
@@ -79,6 +88,7 @@ mod relaunch;
 mod roots;
 mod steam;
 mod ts21;
+mod tspkg;
 mod version;
 
 use roots::{Engine, Os, Root, Target};
@@ -171,6 +181,22 @@ fn main() {
                 exit(1);
             }
         }
+        "tspkg" => {
+            if !ctx.tspkg_all(&select_roots(&args)) {
+                exit(1);
+            }
+        }
+        "plugin-offer" => {
+            let required = take_flag(&mut args, "--required");
+            let Some(path) = args.first() else { usage() };
+            match tspkg::plugin_offer(Path::new(path), required) {
+                Ok(entry) => print!("{entry}"),
+                Err(e) => {
+                    eprintln!("plugin-offer: {e}");
+                    exit(1);
+                }
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -225,7 +251,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|ts21|version|relaunch|all|client|steam|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|client-plugins|ts21|version|relaunch|tspkg|plugin-offer|all|client|steam|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
