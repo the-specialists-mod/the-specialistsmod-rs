@@ -155,17 +155,23 @@ pub fn plan(req: &Request, cx: &Context) -> Vec<Step> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
     FwgsLinux,
-    /// FWGS on Windows; verified under Wine (`cargo xtask relaunch fwgs-win`).
+    /// FWGS on Windows. The client can't tell Wine from native Windows (both are a win32
+    /// `client.dll` in the same engine), so this covers both, but it was verified only under Wine
+    /// (`cargo xtask relaunch fwgs-win`, FWGS 0.21 win32).
     FwgsWindows,
     SteamLinux,
     SteamWindows,
 }
 
-/// The platforms whose self-relaunch passed its e2e test (`cargo xtask relaunch`, docs/validation.md).
-/// Empty until those runs pass: a platform goes in only after its test does, and comes out when
-/// it fails (§13.5 case 3). Everywhere else the client goes from the launcher straight to quit and
-/// inform.
-pub const SELF_RELAUNCH_VERIFIED: &[Platform] = &[];
+/// The platforms whose self-relaunch passed its e2e test (`cargo xtask relaunch`, docs/validation.md
+/// §2.r): a platform goes in only after its test does, and comes out when it fails (§13.5 case
+/// 3). Everywhere else the client goes from the launcher straight to quit and inform.
+///
+/// * `FwgsLinux`: the `self` scenario on `fwgs` passed, 2026-10-19 (#332).
+/// * `FwgsWindows`: the `self` scenario on `fwgs-win` (FWGS 0.21 win32 under Wine) passed, the
+///   same runs. Not run on native Windows; [`Platform`] doesn't tell the two apart.
+/// * Steam HL25 (Linux and Windows): no test yet (#307), so off.
+pub const SELF_RELAUNCH_VERIFIED: &[Platform] = &[Platform::FwgsLinux, Platform::FwgsWindows];
 
 pub fn self_relaunch_enabled(p: Platform) -> bool {
     SELF_RELAUNCH_VERIFIED.contains(&p)
@@ -257,9 +263,13 @@ mod tests {
         assert!(plan(&req, &cx).is_empty());
     }
 
+    /// Only the platforms whose `cargo xtask relaunch` self scenario passed (#332). Steam needs
+    /// its own test (#307) before it may go in.
     #[test]
     fn self_relaunch_is_off_until_verified() {
-        for p in [Platform::FwgsLinux, Platform::FwgsWindows, Platform::SteamLinux, Platform::SteamWindows] {
+        assert!(self_relaunch_enabled(Platform::FwgsLinux));
+        assert!(self_relaunch_enabled(Platform::FwgsWindows));
+        for p in [Platform::SteamLinux, Platform::SteamWindows] {
             assert!(!self_relaunch_enabled(p), "{p:?} has no passing relaunch test yet");
         }
     }

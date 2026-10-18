@@ -323,7 +323,7 @@ check fails if the server logs `[ts] version: refused`.
 
 ### 2.r Restart and reconnect (`cargo xtask relaunch`)
 
-`cargo xtask relaunch [--release] [--xvfb] [fwgs] [fwgs-win]` (issue #301,
+`cargo xtask relaunch [--release] [--xvfb] [--only <scenario>,...] [fwgs] [fwgs-win]` (issue #301,
 `xtask/src/relaunch.rs`, `implementation/client-plugins.md` §11 e2e 5 and 6, §13.5). Two dedicated
 servers run on the `fwgs` root (TS 3.0 mode, `ts_dojo`): an open one and one with
 `sv_password`. Each client root (default `fwgs`, then `fwgs-win` under Wine) is installed with the
@@ -343,21 +343,45 @@ runs `ts_dev_restart`:
 | next start | `.reconnect` from `inform` | "Reconnect to ..." with the password field; cancelled, nothing connects and the file is gone; then a fresh file and a click joins |
 
 Every scenario also fails if the password (`e2e-secret-4711`) appears in the fake launcher's log
-(every IPC line, every argument, its whole environment) or in `.reconnect`. Joins are read from
-A2S (`players`), so no client log is needed; the logs are in `target/relaunch/` (`*-game.log` the
-first game, `*-launcher.log` what the fake launcher got, `*-cards.txt.shown` the cards).
+(every IPC line, every argument, its whole environment) or in `.reconnect`. A join is read from
+the server, so no client log is needed: rcon `status` must list a spawned `xtask_e2e` (a ping, not
+`Connect`/`Spawning`/`Zombie`) heard from in the last 3 s. The A2S player count isn't enough: it
+counts a client from its first `connect` packet, and a killed game until `sv_timeout` drops it.
+Each scenario first waits for the server to be empty (A2S), which the "nothing connected" checks
+use too. The logs are in `target/relaunch/` (`*-game.log` the first game, `*-launcher.log` what
+the fake launcher got, `*-cards.txt.shown` the cards, and under Wine `*-engine.log`, the last
+`engine.log` of the scenario). `--only ipc,self,...` runs some scenarios (`inform` includes the
+next-start ones).
+
+Test-server settings and why (issue #332): `sv_timeout 20` and `sv_connect_timeout 30` shorten
+the wait for a killed game to leave, and `sv_connect_timeout_ban 0` is needed because FWGS
+otherwise bans an address whose connecting client times out (`addip 2`). A game killed
+mid-connect would lock 127.0.0.1 out of the next scenarios. The run kills its Linux games with
+SIGKILL: SDL turns SIGTERM into `SDL_QUIT`, which FWGS passes to the menu's quit question, so the
+game stays connected.
 
 `--xvfb` runs the games on `Xvfb :87` from `~/scratch/xvfb` (or `XVFB=<path>`), so nothing opens
 on the desktop. The run kills the games it started (Linux: every process running the root's
-`xash3d`; Wine: `wineserver -k` on the shared prefix), so run it alone, not next to another
-xtask run on the same roots. About 5 minutes per root; not in `all`.
+`xash3d`, also at the start of each root's run; Wine: `wineserver -k` on the shared prefix), so
+run it alone, not next to another xtask run on the same roots. About 5 minutes per root; not in
+`all`.
 
-**Self-relaunch is off by default** on every platform (`SELF_RELAUNCH_VERIFIED` in
-`crates/client/src/relaunch/plan.rs` is empty). When the `self` scenario passes on a root, add
-its platform (`FwgsLinux` for `fwgs`, `FwgsWindows` for `fwgs-win`) in the same change that
-records the run here; remove it if the scenario fails later. Not covered yet: Steam HL25
-(`steam://run`, #307), the real tsmod-launcher with port update and downgrade (#308), and the
-card windows themselves, which the e2e hook answers without opening (#309).
+**Runs, 2026-10-19** (`cargo xtask relaunch --xvfb fwgs fwgs-win`, dev profile, FWGS Linux
+amd64 and FWGS 0.21 win32 under Wine). The first run, on main, failed on both roots. All of it
+was the test (#332): leftover Linux games that SIGTERM didn't stop, joins read from the A2S count,
+and FWGS's connect-timeout ban. With those fixed, every scenario passed on both roots in three
+consecutive runs. The first ran before the list below changed and the other two after. The `self`
+scenario forces the self-relaunch on either way.
+
+**Self-relaunch is on only where the `self` scenario passed** (`SELF_RELAUNCH_VERIFIED` in
+`crates/client/src/relaunch/plan.rs`). Today that is `FwgsLinux` (`fwgs`) and `FwgsWindows`
+(`fwgs-win`). `FwgsWindows` was verified under Wine only. The client can't tell Wine from
+native Windows (`Platform` has one FWGS Windows value), so native Windows FWGS gets the
+self-relaunch on the strength of the Wine run and is unverified there. The Steam platforms stay
+off until #307 has a test. Remove a platform in the same change that records a failing `self`
+run here. Not covered yet: Steam HL25 (`steam://run`, #307), the real tsmod-launcher with port
+update and downgrade (#308), native Windows, and the card windows themselves, which the e2e hook
+answers without opening (#309).
 ### 2.z2 Plugin offers (`cargo xtask tspkg`)
 
 `cargo xtask tspkg [roots...]` (issue #298, `xtask/src/tspkg.rs`, `implementation/client-plugins.md`
@@ -522,11 +546,10 @@ win32 under Wine (listen server, `ts_arena`).
 
 ### 3.2 Not validated
 
-* `cargo xtask relaunch` (restart and reconnect, §2.r, issue #301) was added without being run:
-  its scenarios, the IPC exchange over a real socket and pipe, and the self-relaunch on both FWGS
-  roots are unverified, so self-relaunch stays disabled everywhere. Unit tests cover the
-  decision order, the arguments, the IPC lines, `launcher.toml` and `.reconnect`, the cards'
-  logic, and a Unix-socket round trip.
+* Restart and reconnect (issue #301): `cargo xtask relaunch` passes on `fwgs` and `fwgs-win`
+  (Wine) since 2026-10-19 (§2.r). Not validated: native Windows (the self-relaunch is on for
+  `FwgsWindows` from the Wine run alone), Steam HL25 (#307), the real tsmod-launcher (#308) and
+  the drawn card windows (#309).
 
 * `cargo xtask plugins` (the `tsmod_*` loader and the `tsmod_test` bot backend on all seven roots,
   [implementation/bot-plugins.md](implementation/bot-plugins.md) §6) was added with issue #104 and

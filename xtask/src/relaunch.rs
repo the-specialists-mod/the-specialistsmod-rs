@@ -26,8 +26,20 @@
 //! each argument and the whole environment it got), nor in `.reconnect`. Scenario 4 passing is
 //! what lets a platform into `SELF_RELAUNCH_VERIFIED` (crates/client/src/relaunch/plan.rs).
 //!
+//! "Joined" means in the game: rcon `status` lists an `xtask_e2e` that is spawned (a ping, not
+//! `Connect`/`Spawning`/`Zombie`) and sent something in the last 3 s. The A2S player count isn't
+//! enough: it counts a client from its first `connect` packet, and a game the previous scenario
+//! killed (no `disconnect`) stays on the list until `sv_timeout` drops it. So every scenario also
+//! starts on an empty server (A2S shows no players). The servers run `sv_timeout 20` and
+//! `sv_connect_timeout 30` so that wait is short, and `sv_connect_timeout_ban 0`: FWGS otherwise
+//! bans the address of a client that timed out while connecting (`addip` for 2 min), and killing
+//! a game mid-connect would lock 127.0.0.1 out of the next scenarios.
+//!
 //! `--xvfb` runs the games on a private X server (`~/scratch/xvfb/usr/bin/Xvfb`, or `XVFB`).
-//! About 5 min per root. Not in `all`.
+//! `--only <name>[,<name>...]` runs some scenarios (`ipc`, `ipc-silent`, `relaunch-args`,
+//! `self`, `inform`, the last with the next-start ones). Under Wine the engine's `engine.log` is
+//! kept per scenario as `target/relaunch/<root>-<scenario>-engine.log`. About 5 min per root.
+//! Not in `all`.
 
 use crate::a2s;
 use crate::roots::{self, EXEC_SERVER_CFG, Os, Root, Target};
@@ -38,12 +50,15 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const PASSWORD: &str = "e2e-secret-4711";
+const RCON: &str = "xtask-relaunch-rcon";
 const CLIENT_CFG: &str = "xtask_relaunch.cfg";
 pub(crate) const LAUNCHER_DIR: &str = "xtask_launcher";
 
 fn server_cfg(password: bool) -> String {
     let pw = if password { format!("sv_password \"{PASSWORD}\"\n") } else { "sv_password \"\"\n".into() };
-    format!("// Written by cargo xtask relaunch.\n{EXEC_SERVER_CFG}developer 1\nmp_timelimit 0\nmp_fraglimit 0\nts_bot_quota 0\n{pw}")
+    format!(
+        "// Written by cargo xtask relaunch.\n{EXEC_SERVER_CFG}developer 1\nmp_timelimit 0\nmp_fraglimit 0\nts_bot_quota 0\nsv_timeout 20\nsv_connect_timeout 30\nsv_connect_timeout_ban 0\nsv_max_queries_sec 1000\nsv_max_queries_sec_global 10000\nrcon_password \"{RCON}\"\n{pw}"
+    )
 }
 
 /// A path as the root's programs see it: Windows programs under Wine get the `Z:` drive's name.
@@ -71,6 +86,7 @@ impl Ctx {
     pub fn relaunch_all(&self, args: &[String]) -> bool {
         let mut names = args.to_vec();
         let xvfb = crate::take_flag(&mut names, "--xvfb");
+        let only: Option<Vec<String>> = crate::take_opt(&mut names, "--only").map(|o| o.split(',').map(str::to_owned).collect());
         let server = Root::all().into_iter().find(|r| r.name == "fwgs").unwrap();
         if !server.exists() {
             say!("== relaunch: skipped (no fwgs root for the servers)");
@@ -89,7 +105,7 @@ impl Ctx {
             }
             self.install_e2e(r);
             let base = 27915 + 20 * i as u16;
-            ok &= self.relaunch_root(&server, r, base, display.as_ref().map(|d| d.1.as_str()));
+            ok &= self.relaunch_root(&server, r, base, display.as_ref().map(|d| d.1.as_str()), only.as_deref());
             // Put the normal client back.
             self.install(r);
         }
@@ -140,12 +156,15 @@ impl Ctx {
         say!("== {}: e2e client and {exe} installed", root.name);
     }
 
-    fn relaunch_root(&self, server: &Root, root: &Root, base: u16, display: Option<&str>) -> bool {
+    fn relaunch_root(&self, server: &Root, root: &Root, base: u16, display: Option<&str>, only: Option<&[String]>) -> bool {
+        let wanted = |n: &str| only.is_none_or(|o| o.iter().any(|w| w == n));
         say!("== {}: restart and reconnect (servers on {}, ports {base} and {})", root.name, server.name, base + 1);
         let Some(mut servers) = self.relaunch_servers(server, base) else {
             say!("   FAIL: the servers didn't answer");
             return false;
         };
+        // A game left over from an interrupted run would join the servers and pass every "joined".
+        Run::new(self, root, "start", display).kill_games();
         let reconnect = root.path.join("ts").join("cl_plugins_data").join(".reconnect");
         let _ = fs::remove_file(&reconnect);
         let typed = format!("typed={PASSWORD}\n");
@@ -170,11 +189,15 @@ impl Ctx {
             Scenario { name: "self", password: false, ipc: None, launcher_toml: false, self_relaunch: true, answers: String::new() },
         ];
         let mut checks: Vec<(String, bool)> = Vec::new();
-        for s in &scenarios {
+        for s in scenarios.iter().filter(|s| wanted(s.name)) {
             let port = if s.password { servers.passworded } else { servers.open };
+            checks.push(empty_server(s.name, port));
             checks.extend(self.restart_scenario(root, s, port, display));
         }
-        checks.extend(self.inform_scenarios(root, servers.passworded, &reconnect, display));
+        if wanted("inform") {
+            checks.push(empty_server("inform", servers.passworded));
+            checks.extend(self.inform_scenarios(root, servers.passworded, &reconnect, display));
+        }
         for c in &mut servers.children {
             let _ = c.kill();
             let _ = c.wait();
@@ -259,7 +282,7 @@ impl Ctx {
         );
         let mut g1 = run.start_game(&script, &env);
         let g1_gone = wait_exit(&mut g1, Duration::from_secs(if root.os == Os::Windows { 150 } else { 90 }));
-        let back = g1_gone && wait_players(port, |p| p > 0, Duration::from_secs(if root.os == Os::Windows { 120 } else { 60 }));
+        let back = g1_gone && wait_in_game(port, Duration::from_secs(if root.os == Os::Windows { 120 } else { 60 }));
         // Stop everything this scenario started.
         let _ = g1.kill();
         let _ = g1.wait();
@@ -269,6 +292,7 @@ impl Ctx {
             let _ = f.wait();
         }
         root.cleanup();
+        run.keep_engine_log();
         let _ = fs::remove_file(&toml);
         let log = run.fake_log();
         let shown = run.shown();
@@ -349,6 +373,7 @@ impl Ctx {
         let _ = g.wait();
         run.kill_games();
         root.cleanup();
+        run.keep_engine_log();
         let text = fs::read_to_string(reconnect).unwrap_or_default();
         c.push(("inform: the card was shown".into(), run.shown().contains("kind=inform")));
         c.push(("inform: \"Quit now\" quit the game".into(), gone));
@@ -360,6 +385,8 @@ impl Ctx {
         c.push(("inform: the password isn't in .reconnect".into(), !text.is_empty() && !text.contains(PASSWORD)));
         run.clean();
 
+        // The next start must not find the inform game (it quit, but make sure) on the server.
+        c.push(empty_server("next start", port));
         say!("   -- next start, card cancelled");
         let run = Run::new(self, root, "next-cancel", display);
         run.write_answers("reconnect=cancel\n");
@@ -369,6 +396,7 @@ impl Ctx {
         let _ = g.wait();
         run.kill_games();
         root.cleanup();
+        run.keep_engine_log();
         let shown = run.shown();
         c.push((
             "next start: \"Reconnect to ...\" was offered, with the password field".into(),
@@ -378,6 +406,7 @@ impl Ctx {
         c.push(("next start: .reconnect is read once (removed)".into(), !reconnect.exists()));
         run.clean();
 
+        c.push(empty_server("next start, answered", port));
         say!("   -- next start, card answered");
         let run = Run::new(self, root, "next-ok", display);
         run.write_answers(&format!("reconnect=ok\ntyped={PASSWORD}\n"));
@@ -389,11 +418,12 @@ impl Ctx {
         )
         .unwrap();
         let mut g = run.start_game("name xtask_e2e\n", &[]);
-        let joined = wait_players(port, |p| p > 0, Duration::from_secs(if root.os == Os::Windows { 120 } else { 60 }));
+        let joined = wait_in_game(port, Duration::from_secs(if root.os == Os::Windows { 120 } else { 60 }));
         let _ = g.kill();
         let _ = g.wait();
         run.kill_games();
         root.cleanup();
+        run.keep_engine_log();
         c.push(("next start: clicked (password typed), the game joined the passworded server".into(), joined));
         let _ = fs::remove_file(reconnect);
         run.clean();
@@ -430,6 +460,37 @@ fn wait_players(port: u16, pred: impl Fn(u8) -> bool, limit: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(500));
     }
     false
+}
+
+/// Waits for the server on `port` to have no players (a killed game lingers until `sv_timeout`),
+/// so that a player seen later is the scenario's own game.
+fn empty_server(scenario: &str, port: u16) -> (String, bool) {
+    (format!("{scenario}: the server on port {port} was empty first"), wait_players(port, |p| p == 0, Duration::from_secs(60)))
+}
+
+/// Waits for an `xtask_e2e` in the game on `port` (see the module docs).
+fn wait_in_game(port: u16, limit: Duration) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < limit {
+        if a2s::rcon("127.0.0.1", port, false, RCON, "status").is_ok_and(|s| in_game(&s)) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    false
+}
+
+/// Whether FWGS's `status` (`SV_Status_f`: `# score ping dev lastmsg qport useragent name
+/// address`) lists a spawned `xtask_e2e` heard from in the last 3 s.
+fn in_game(status: &str) -> bool {
+    status.lines().any(|l| {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        w.len() > 5
+            && w[0].parse::<u32>().is_ok()
+            && w[2].parse::<i32>().is_ok()
+            && w[4].parse::<f64>().is_ok_and(|last| last < 3.0)
+            && w.contains(&"xtask_e2e")
+    })
 }
 
 /// `~/scratch/xvfb/usr/bin/Xvfb :87` (or `XVFB`); the child and the display name.
@@ -580,6 +641,8 @@ impl<'a> Run<'a> {
 
     /// Stops the games this scenario started indirectly (the fake launcher's or the self-relaunch's):
     /// on Linux every process running this root's `xash3d`, under Wine the prefix's processes.
+    /// `SIGKILL`: SDL turns `SIGTERM` into `SDL_QUIT`, which FWGS hands to the menu's quit
+    /// question ("CL_RequestQuit: ... passing to the menu"), so the game would stay connected.
     fn kill_games(&self) {
         if self.root.os == Os::Windows {
             roots::wine_cleanup();
@@ -589,14 +652,40 @@ impl<'a> Run<'a> {
         for e in fs::read_dir("/proc").into_iter().flatten().flatten() {
             let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
             if fs::read_link(e.path().join("exe")).is_ok_and(|p| p == exe) {
-                let _ = Command::new("kill").arg(pid.to_string()).status();
+                let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
             }
         }
         std::thread::sleep(Duration::from_secs(1));
     }
 
+    /// Under Wine, `-log` writes `<root>/engine.log` (each start truncates it): keep this
+    /// scenario's last one.
+    fn keep_engine_log(&self) {
+        if self.root.os == Os::Windows {
+            let _ = fs::copy(self.root.path.join("engine.log"), self.dir().join(format!("{}-{}-engine.log", self.root.name, self.tag)));
+        }
+    }
+
     fn clean(&self) {
         let _ = fs::remove_file(self.root.path.join("ts").join(CLIENT_CFG));
         let _ = fs::remove_file(self.root.path.join("ts").join("xtask_relaunch_done"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn in_game_needs_a_spawned_recent_player() {
+        let head = "map: ts_dojo\n# score ping dev  lastmsg qport useragent\t\tname\t\taddress\n";
+        let line = |state: &str, last: &str| {
+            format!("{head} 1     0 {state}    m {last}  1234 0.21 (linux-amd64 1)\txtask_e2e\t127.0.0.1:27005\n\n")
+        };
+        assert!(super::in_game(&line("      12", "0.01000")));
+        assert!(!super::in_game(&line("Connect ", "0.01000")));
+        assert!(!super::in_game(&line("Spawning", "0.01000")));
+        assert!(!super::in_game(&line("Zombie  ", "0.01000")));
+        // A killed game, still listed until sv_timeout.
+        assert!(!super::in_game(&line("      12", "8.50000")));
+        assert!(!super::in_game(head));
     }
 }

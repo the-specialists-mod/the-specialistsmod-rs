@@ -144,8 +144,10 @@ fn forced_self_relaunch() -> Option<bool> {
 
 fn self_relaunch(gamedir: String) -> Option<SelfRelaunch> {
     let p = platform();
-    if !forced_self_relaunch().unwrap_or_else(|| plan::self_relaunch_enabled(p)) {
-        engine().print(&format!("[ts] relaunch: self-relaunch isn't enabled on {p:?} (no passing relaunch test yet)\n"));
+    let forced = forced_self_relaunch();
+    if !forced.unwrap_or_else(|| plan::self_relaunch_enabled(p)) {
+        let why = if forced.is_some() { "turned off for this test" } else { "no passing relaunch test yet" };
+        engine().print(&format!("[ts] relaunch: self-relaunch isn't enabled on {p:?} ({why})\n"));
         return None;
     }
     if !engine().is_xash() {

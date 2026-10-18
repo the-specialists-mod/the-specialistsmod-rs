@@ -48,7 +48,7 @@
 //!                                                 each Linux root's dedicated server with the FWGS
 //!                                                 port client and the original TS client (see
 //!                                                 version.rs; not in `all`)
-//! cargo xtask relaunch [--release] [--xvfb] [<fwgs-root>...]
+//! cargo xtask relaunch [--release] [--xvfb] [--only <scenario>,...] [<fwgs-root>...]
 //!                                                 restart and reconnect end to end with the e2e
 //!                                                 client and ts-launcher-fake: IPC, relaunch
 //!                                                 arguments, self-relaunch, quit and inform, the

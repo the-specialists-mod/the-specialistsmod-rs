@@ -9,7 +9,9 @@ libraries, `[requires] port`, `scope = "server"` loading, the `cl_plugins*` cvar
 `crates/client/src/plugins/` (§16 lists what that build decided); the server's offers (§6.1, §6.2,
 §6.5, §12, op 5 of §13.1; `ts_server::plugin_offers`, `shared::protocol::tspkg`, issue #298); the
 port client's version check (§13.1, issue #300); the port side of restart and reconnect (§13.5,
-issue #301; the launcher side is tsmod-launcher #4 and #5); and the client's offer flow (§6.3,
+issue #301; the launcher side is tsmod-launcher #4 and #5; `cargo xtask relaunch` passes on FWGS
+Linux and FWGS win32 under Wine since 2026-10-19, and the self-relaunch is on for those two
+platforms, validation.md §2.r); and the client's offer flow (§6.3,
 §6.4, §7.2, §7.3, §9, op 5's card; `crates/client/src/plugins/offers/`, issue #299; §17 lists what
 that build decided); and enforcement (§13.2–§13.4: `match`, `[[block]]`, `[policy] unlisted`, ops 3
 and 4, suspend and resume, the grace periods; `ts_server::plugin_offers::enforce` and
@@ -823,6 +825,13 @@ Its dependencies are kept to what the launcher already has (`zip` with deflate o
 
      A failing platform keeps its self-relaunch disabled (§13.5 case 3).
 
+     **Status, 2026-10-19:** e2e 5's restart scenarios run in `cargo xtask relaunch`
+     (validation.md §2.r) and pass on FWGS Linux and FWGS win32 under Wine. They cover IPC, IPC
+     without an answer then `relaunch`, `launcher.toml` only, the self-relaunch, quit and
+     inform, the next start, and the passworded server with its card. The launcher in those
+     runs is `ts-launcher-fake`. e2e 6 with the real tsmod-launcher and its update paths is
+     #308. Steam HL25 is #307. Native Windows hasn't been run.
+
 ## 12. Wire compatibility
 
 * `TSPkg` (and the webview spec's `TSExt`) are new user messages. TS 3.0's client doesn't hook
@@ -1269,14 +1278,19 @@ Notes:
   the `+tsrs_reconnect ... password` form), through `xdg-open` or `rundll32
   url.dll,FileProtocolHandler`, then quits. Steam starts the game again once it has exited.
 * Each is enabled per engine and platform only once §11's relaunch tests pass there
-  (`SELF_RELAUNCH_VERIFIED` in `crates/client/src/relaunch/plan.rs`, empty until then: FWGS
-  Linux, FWGS Windows (verified under Wine), Steam Linux, Steam Windows). Until then, and on a
-  platform where a test fails, the client goes on to case 4. The FWGS test is `cargo xtask
-  relaunch` (validation.md §2.r), whose e2e build forces the self-relaunch on with
-  `TSRS_E2E_SELF_RELAUNCH=1` so the platform can be verified before it is listed; the HL25 test
-  belongs in `cargo xtask steam` and doesn't exist yet. The things to prove are that Steam starts
-  the game again while the old process is still exiting, and that the FWGS re-exec rebuilds the
-  right command line under Wine, where the original arguments are the Windows command line.
+  (`SELF_RELAUNCH_VERIFIED` in `crates/client/src/relaunch/plan.rs`). On a platform not in it,
+  or where a test fails, the client goes on to case 4. The FWGS test is `cargo xtask relaunch`
+  (validation.md §2.r). Its e2e build forces the self-relaunch on with
+  `TSRS_E2E_SELF_RELAUNCH=1`, so a platform can be verified before it is listed.
+  * **FWGS Linux: on.** The `self` scenario passed on 2026-10-19 (#332).
+  * **FWGS Windows: on, verified under Wine only.** The `self` scenario passed on `fwgs-win`
+    (FWGS 0.21 win32 under Wine), the same day. So the re-exec rebuilds a working command line
+    from Wine's `GetCommandLineW`. The client can't tell Wine from native Windows, and
+    `Platform::FwgsWindows` is one value for both, so native Windows FWGS gets the
+    self-relaunch on the strength of the Wine run. It hasn't been run there.
+  * **Steam HL25 (Linux and Windows): off.** The test belongs in `cargo xtask steam` and doesn't
+    exist yet (#307). It has to prove that Steam starts the game again while the old process is
+    still exiting.
 
 #### 4. Nothing else: quit and inform
 
