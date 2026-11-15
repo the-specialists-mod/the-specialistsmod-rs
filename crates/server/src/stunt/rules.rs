@@ -185,6 +185,22 @@ pub trait StuntClock: Sync {
     fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32;
 }
 
+/// TS 3.0's coyote-time test: refused when `0.7 / slowmul < time - lastGroundTime`, the
+/// difference stored as a `double` and the `double` 0.7 divided on the x87. `mp.dll`
+/// (`HandleStunt` 0x10069419..0x10069437, `fdivr`) divides at 53 bits and refuses on C0 (a NaN
+/// too); `ts_i386.so` (0x8b12b..0x8b155, the same in `GoWheel`) divides in extended precision
+/// and refuses only when the difference is above the quotient (`test ah,0x41; je`).
+// The negated compare is the x87 branch's: a NaN (unordered) takes the other way.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn coyote_allows(arith: shared::pm::Arith, now: f32, slow_mul: f32, last_ground: f32) -> bool {
+    use shared::pm::{Arith, Ext, below87};
+    let diff = f64::from(now) - f64::from(last_ground);
+    match arith {
+        Arith::Msvc => !below87(0.7 / f64::from(slow_mul), diff),
+        Arith::Gcc => !(Ext::from_f64(diff) > Ext::from_f64(0.7) / Ext::from_f32(slow_mul)),
+    }
+}
+
 /// A test helper: TS 3.0's relative countdown clock, for core tests that need a [`StuntClock`]
 /// without depending on the 3.0 plugin (which depends on this crate).
 #[cfg(test)]
@@ -241,21 +257,5 @@ pub(crate) mod countdown {
         fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
             self.start(now, time_scale, f64::from(t))
         }
-    }
-}
-
-/// TS 3.0's coyote-time test: refused when `0.7 / slowmul < time - lastGroundTime`, the
-/// difference stored as a `double` and the `double` 0.7 divided on the x87. `mp.dll`
-/// (`HandleStunt` 0x10069419..0x10069437, `fdivr`) divides at 53 bits and refuses on C0 (a NaN
-/// too); `ts_i386.so` (0x8b12b..0x8b155, the same in `GoWheel`) divides in extended precision
-/// and refuses only when the difference is above the quotient (`test ah,0x41; je`).
-// The negated compare is the x87 branch's: a NaN (unordered) takes the other way.
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
-pub fn coyote_allows(arith: shared::pm::Arith, now: f32, slow_mul: f32, last_ground: f32) -> bool {
-    use shared::pm::{Arith, Ext, below87};
-    let diff = f64::from(now) - f64::from(last_ground);
-    match arith {
-        Arith::Msvc => !below87(0.7 / f64::from(slow_mul), diff),
-        Arith::Gcc => !(Ext::from_f64(diff) > Ext::from_f64(0.7) / Ext::from_f32(slow_mul)),
     }
 }
