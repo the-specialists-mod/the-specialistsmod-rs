@@ -199,7 +199,8 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &[u8], kill: bool, gib: bo
         let world = engine().entity_of_index(0);
         let b = if gib { bits::ALWAYSGIB } else { bits::NEVERGIB };
         state::with(|g| g.death_suppressed = true);
-        crate::player::damage::take_damage(p, cx, &DamageInfo::new(world, world, 900.0, b));
+        // #326: TS calls the virtual `TakeDamage` (`ChangePlayerTeam` 0xe48e2).
+        crate::ham::player_take_damage(p, cx, &DamageInfo::new(world, world, 900.0, b));
         state::with(|g| g.death_suppressed = false);
     }
     let (the_one, one, valid) = state::with(|g| (g.the_one, g.the_one_team_names(), g.is_valid_team(name)));

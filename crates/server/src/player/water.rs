@@ -201,7 +201,9 @@ pub fn water_move(p: &mut Player, cx: &mut Cx) {
         } else if pain_finished < now {
             let dmg = next_drown_damage(cx.pev().dmg);
             cx.pev().dmg = dmg;
-            super::damage::take_damage(p, cx, &world_damage(dmg, bits::DROWN));
+            // #326: TS calls the virtual `TakeDamage` (`WaterMove` 0xd905c), so the ham hooks
+            // and the damage event must fire.
+            crate::ham::player_take_damage(p, cx, &world_damage(dmg, bits::DROWN));
             let v = cx.pev();
             v.pain_finished = now + 1.0;
             // TS re-reads pev->dmg after the damage call.
@@ -234,13 +236,14 @@ pub fn water_move(p: &mut Player, cx: &mut Cx) {
     // SDK quirks kept: lava never advances `dmgtime` (entering any liquid zeroes it), so it
     // burns every frame; slime sets `dmgtime` but never checks it, so it too hurts every frame.
     let (watertype, waterlevel) = (cx.pev().watertype, cx.pev().waterlevel);
+    // #326: TS calls the virtual `TakeDamage` for lava and slime (`WaterMove` 0xd905c).
     if watertype == CONTENTS_LAVA {
         if now > cx.pev().dmgtime {
-            super::damage::take_damage(p, cx, &world_damage((waterlevel * 10) as f32, bits::BURN));
+            crate::ham::player_take_damage(p, cx, &world_damage((waterlevel * 10) as f32, bits::BURN));
         }
     } else if watertype == CONTENTS_SLIME {
         cx.pev().dmgtime = now + 1.0;
-        super::damage::take_damage(p, cx, &world_damage((waterlevel * 4) as f32, bits::ACID));
+        crate::ham::player_take_damage(p, cx, &world_damage((waterlevel * 4) as f32, bits::ACID));
     }
 
     let v = cx.pev();
@@ -262,7 +265,8 @@ pub fn check_time_based_damage(p: &mut Player, cx: &mut Cx) {
     }
     if tick.poison {
         let e = cx.edict;
-        super::damage::take_damage(p, cx, &DamageInfo::new(e, e, POISON_DAMAGE, bits::GENERIC));
+        // #326: TS calls the virtual `TakeDamage` (`CheckTimeBasedDamage` 0xda00c).
+        crate::ham::player_take_damage(p, cx, &DamageInfo::new(e, e, POISON_DAMAGE, bits::GENERIC));
     }
     if tick.cured_poison {
         super::suit::set_suit_update(p, cx, Some(c"!HEV_HEAL4"), false, 0);

@@ -232,6 +232,20 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         }
     }
     crate::damage::multi::add(dmg.attacker, e, amount, dmg.bits);
+    // Port addition (#327): per-hitgroup pellet counts and damage flags for the damage event.
+    if crate::plugins::any() {
+        crate::damage::multi::add_pellet(dmg.hitgroup);
+        let mut flags = 0;
+        if cx.pev().iuser4 & rules::scoring::STUNTING != 0 {
+            flags |= ts_plugin_api::damage_flags::STUNTING;
+        }
+        if now < p.stunt.dodge_until {
+            flags |= ts_plugin_api::damage_flags::DODGING;
+        }
+        if flags != 0 {
+            crate::damage::multi::add_damage_flags(flags);
+        }
+    }
     // TraceAttack's `dmgreport` cheat log (any non-zero value), after the AddMultiDamage.
     if crate::weapons::dmgreport() != 0.0 && !dmg.attacker.is_null() {
         let (by, to) = (eng.string(dmg.attacker.v().netname), eng.string(cx.pev().netname));
@@ -254,15 +268,31 @@ fn take_damage_refused(attacker: *mut edict_t, victim: *mut edict_t) -> bool {
     !attacker.is_null() && attacker != victim && rules::teams::same_team(attacker, victim) && !rules::cvars::on(c"mp_friendlyfire")
 }
 
+/// What `take_damage` passes to the damage event (#327, #328).
+pub struct TakeDamageExtra {
+    /// Health before the damage was applied.
+    pub health_prev: f32,
+    /// The amount kevlar absorbed (asked damage minus post-kevlar damage).
+    pub armor_absorbed: f32,
+    /// The hit changed nothing: a dead victim, no damage, a team mate without friendly fire,
+    /// `takedamage` off or god mode. A killing blow isn't refused.
+    pub refused: bool,
+}
+
 /// `CBasePlayer::TakeDamage` (0x8fa94) with `CBaseMonster::TakeDamage` (0xb2430) inside it:
 /// what `ApplyMultiDamage` (the TraceAttacks' sum) or a direct hit deals. The hitgroup is the
 /// one the last TraceAttack left (`m_LastHitGroup`).
+///
+/// Port addition (#328): the damage event is fired from here, before `Killed`, so that in the
+/// deferred FIFO the `damage` callback arrives before `player_killed` / `kill_scored`.
 pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     let e = cx.edict;
     let amount = dmg.damage;
     // `flHealthPrev`, for the suit's health reports.
     let health_prev = cx.pev().health;
     if !Player::is_alive(cx) || amount == 0.0 {
+        // Port addition (#326): a refused hit still produces a damage event.
+        damage_event(cx, dmg, health_prev, 0.0, true);
         return false;
     }
     // Arm the bullet dance (`normal_die*` death poses, and twitching if the body is shot while
@@ -275,6 +305,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         crate::stunt::anim::disable_bullet_dance(p);
     }
     if take_damage_refused(dmg.attacker, e) {
+        damage_event(cx, dmg, health_prev, 0.0, true);
         return false; // FPlayerCanTakeDamage
     }
     // Truncated, like the kevlar-scaled damage below (0x8fbd0).
@@ -283,8 +314,12 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     let mut armor = cx.pev().armorvalue;
     let after = rules.armor_damage(&mut armor, amount, p.ts.last_hitgroup, dmg.bits);
     cx.pev().armorvalue = armor;
+    let armor_absorbed = amount - after;
 
-    let took = monster_take_damage(p, cx, dmg, after);
+    // Port addition (#328): `monster_take_damage` queues the damage event itself, just before
+    // `Killed` on a killing blow, so `damage` reaches plugins before `player_killed` /
+    // `kill_scored`; TS's order of `Killed` and the rest of this function is kept.
+    let took = monster_take_damage(p, cx, dmg, after, health_prev, armor_absorbed);
 
     // The rest of CBasePlayer::TakeDamage runs whether or not that took it: each time-based type
     // taken restarts its countdown and `m_bitsDamageType |= bits` (`player::water`), then the
@@ -314,6 +349,14 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         health_reports(p, cx, severity, health < 30.0, health_prev, dmg.bits);
     }
     took
+}
+
+/// Port addition (#326, #327, #328): queues player `cx.edict`'s damage event.
+fn damage_event(cx: &mut Cx, dmg: &DamageInfo, health_prev: f32, armor_absorbed: f32, refused: bool) {
+    if crate::plugins::any() {
+        let extra = TakeDamageExtra { health_prev, armor_absorbed, refused };
+        crate::plugin_api::events::damage(cx.edict, dmg, &extra);
+    }
 }
 
 /// `TakeDamage`'s `ftrivial` (health over 75 or under 5 damage) and `fmajor` (over 25 damage).
@@ -426,13 +469,17 @@ fn health_reports(p: &mut Player, cx: &mut Cx, s: Severity, critical: bool, heal
 }
 
 /// `CBaseMonster::TakeDamage` (0xb2430) for a live player: refused with `takedamage` off;
-/// `g_vecAttackDir` from a real inflictor (`damage::update_attack_dir`); the damage counters (the inflictor only when there is one); refused in god mode (`FL_GODMODE`);
-/// then the health drops and `Killed` runs at 0 or below (returning 0). TS has no knockback here
-/// (no `DamageForce` call, no velocity write); only `Killed` pushes the body.
-fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f32) -> bool {
+/// `g_vecAttackDir` from a real inflictor (`damage::update_attack_dir`); the damage counters
+/// (the inflictor only when there is one); refused in god mode (`FL_GODMODE`); then the health
+/// drops and `Killed` runs at 0 or below (returning 0). TS has no knockback here (no
+/// `DamageForce` call, no velocity write); only `Killed` pushes the body.
+///
+/// Port addition (#328): the damage event is queued here, before `Killed` on a killing blow.
+fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f32, health_prev: f32, armor_absorbed: f32) -> bool {
     {
         let v = cx.pev();
         if v.takedamage == 0.0 {
+            damage_event(cx, dmg, health_prev, 0.0, true);
             return false;
         }
         crate::damage::update_attack_dir(dmg.inflictor, v);
@@ -441,10 +488,12 @@ fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f3
         }
         v.dmg_take += amount;
         if v.flags & FL_GODMODE as i32 != 0 {
+            damage_event(cx, dmg, health_prev, 0.0, true);
             return false;
         }
         v.health -= amount;
     }
+    damage_event(cx, dmg, health_prev, armor_absorbed, false);
     if cx.pev().health <= 0.0 {
         rules::on_killed(p, cx, dmg);
         return false;

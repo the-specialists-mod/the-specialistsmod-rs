@@ -167,10 +167,21 @@ pub mod multi {
 
     static MULTI: Global<Cell<MultiDamage>> = Global(Cell::new(MultiDamage::EMPTY));
     static LAST_HEADSHOT: Global<Cell<bool>> = Global(Cell::new(false));
+    /// Port addition (#327): per-hitgroup pellet counts for the current multi-damage, so the
+    /// damage event can report where each pellet landed.
+    static PELLET_COUNTS: Global<Cell<[u8; 8]>> = Global(Cell::new([0; 8]));
+    /// Port addition (#327): damage flags accumulated by TraceAttacks for this multi-damage.
+    static DAMAGE_FLAGS: Global<Cell<i32>> = Global(Cell::new(0));
+    /// Port addition (#327): `ApplyMultiDamage`'s `TakeDamage` is running, so the pellets and
+    /// flags belong to the damage being dealt (a direct hit in between, a fall after a shotgun
+    /// shot, mustn't report them).
+    static APPLYING: Global<Cell<bool>> = Global(Cell::new(false));
 
     /// `ClearMultiDamage` (0xf0d0c): no victim, no damage, no type. `glast_headshot` is left alone.
     pub fn clear() {
         MULTI.0.set(MultiDamage::EMPTY);
+        PELLET_COUNTS.0.set([0; 8]);
+        DAMAGE_FLAGS.0.set(0);
     }
 
     /// `gMultiDamage.type = bits`: `ShootBulletsPlayer` (0x6f69c) and `FireBullets` (0xb39a4)
@@ -209,6 +220,9 @@ pub mod multi {
     pub fn add(attacker: *mut edict_t, victim: *mut edict_t, amount: f32, bits: i32) {
         add_to(&MULTI.0, victim, amount, bits, || {
             apply(attacker, attacker);
+            // Port addition (#327): the new victim's pellets and flags start from none.
+            PELLET_COUNTS.0.set([0; 8]);
+            DAMAGE_FLAGS.0.set(0);
         });
     }
 
@@ -224,7 +238,9 @@ pub mod multi {
         let Some(info) = m.take_damage_info(inflictor, attacker) else {
             return false;
         };
+        let was = APPLYING.0.replace(true);
         let took = take(m.entity, &info);
+        APPLYING.0.set(was);
         headshot.set(false);
         took
     }
@@ -249,6 +265,34 @@ pub mod multi {
     /// `glast_headshot`, which `PlayerKilled` (0x895e4) reads for the `#TS_Headshot` message.
     pub fn headshot() -> bool {
         LAST_HEADSHOT.0.get()
+    }
+
+    /// Port addition (#327): records a TraceAttack pellet for its hitgroup.
+    pub fn add_pellet(hitgroup: i32) {
+        let mut p = PELLET_COUNTS.0.get();
+        let i = hitgroup.clamp(0, 7) as usize;
+        p[i] = p[i].saturating_add(1);
+        PELLET_COUNTS.0.set(p);
+    }
+
+    /// Port addition (#327): the per-hitgroup pellet counts since the last `clear`.
+    pub fn pellets() -> [u8; 8] {
+        PELLET_COUNTS.0.get()
+    }
+
+    /// Port addition (#327): adds `damage_flags` bits for this multi-damage.
+    pub fn add_damage_flags(flags: i32) {
+        DAMAGE_FLAGS.0.set(DAMAGE_FLAGS.0.get() | flags);
+    }
+
+    /// Port addition (#327): whether the damage being dealt is `ApplyMultiDamage`'s.
+    pub fn applying() -> bool {
+        APPLYING.0.get()
+    }
+
+    /// Port addition (#327): the damage flags since the last `clear`.
+    pub fn damage_flags() -> i32 {
+        DAMAGE_FLAGS.0.get()
     }
 
     #[cfg(test)]
@@ -316,6 +360,28 @@ pub mod multi {
             assert_eq!(cell.get().bits, 0, "a null victim adds nothing, not even its bits");
             assert!(!apply_from(&cell, &hs, fake(1), fake(1), |_, _| panic!("no victim")));
             assert!(hs.get(), "glast_headshot is only reset with a victim");
+        }
+
+        #[test]
+        fn pellets_and_flags_only_while_applying() {
+            // #327: a direct hit (not `ApplyMultiDamage`'s) mustn't report the last shot's pellets.
+            clear();
+            add_pellet(1);
+            add_pellet(1);
+            add_pellet(9); // out of range: clamped to the last group
+            add_damage_flags(0x2);
+            assert!(!applying());
+            let cell = Cell::new(MultiDamage { entity: fake(2), amount: 8.0, bits: bits::BULLET });
+            let hs = Cell::new(false);
+            apply_from(&cell, &hs, fake(1), fake(1), |_, _| {
+                assert!(applying());
+                assert_eq!(pellets(), [0, 2, 0, 0, 0, 0, 0, 1]);
+                assert_eq!(damage_flags(), 0x2);
+                true
+            });
+            assert!(!applying());
+            clear();
+            assert_eq!((pellets(), damage_flags()), ([0; 8], 0));
         }
 
         #[test]

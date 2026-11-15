@@ -786,6 +786,17 @@ pub fn player_take_health(p: &mut Player, cx: &mut Cx, amount: f32, run: impl Fn
     inner(id::TAKEHEALTH, p, cx, (amount, 0), |p, cx, (a, _)| run(p, cx, *a))
 }
 
+/// `TakeDamage(pevInflictor, pevAttacker, flDamage, bitsDamageType)` of the player the caller
+/// holds (falls, drowning, poison, the team-change kill: `PostThink`, `WaterMove`,
+/// `CheckTimeBasedDamage`, `ChangePlayerTeam`). TS calls the virtual for all of these, so the
+/// ham hooks must fire (#326).
+pub fn player_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
+    inner(id::TAKEDAMAGE, p, cx, (Ent(dmg.inflictor), Ent(dmg.attacker), dmg.damage, dmg.bits), |p, cx, (inf, att, damage, bits)| {
+        let info = DamageInfo { inflictor: inf.0, attacker: att.0, damage: *damage, bits: *bits, ..*dmg };
+        crate::player::damage::take_damage(p, cx, &info)
+    })
+}
+
 /// `Killed(pevAttacker, iGib)` of the player the caller holds (`CBasePlayer::TakeDamage`).
 /// `iGib` is hamsandwich's 0 normal, 1 never, 2 always, from and back to `DMG_NEVERGIB` /
 /// `DMG_ALWAYSGIB` (`CBaseMonster::TakeDamage`'s choice).

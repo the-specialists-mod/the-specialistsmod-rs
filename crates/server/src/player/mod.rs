@@ -152,12 +152,9 @@ impl Entity for Player {
     }
 
     fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
-        let r = damage::take_damage(self, cx, dmg);
-        // Port addition: plugins hear of the damage once the player is back in reach.
-        if crate::plugins::any() {
-            crate::plugin_api::events::damage(cx.edict, dmg);
-        }
-        r
+        // #328: the damage event is now fired from within `take_damage`, before `Killed`, so
+        // that the deferred `damage` callback arrives before `player_killed` / `kill_scored`.
+        damage::take_damage(self, cx, dmg)
     }
 
     /// `CBasePlayer::Save` / `Restore` (0xda9d8 / 0xdaa2c): `save.rs`.

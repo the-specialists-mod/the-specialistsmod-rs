@@ -1126,7 +1126,8 @@ unsafe extern "C" fn sound(
 }
 
 /// Version 6: the scripted kill's `Ham_TakeDamage` as a damage event; kung-fu hits on our bots
-/// carry a hitgroup.
+/// carry a hitgroup. Version 8 (#327): the new fields (taken, armor_absorbed, refused, pellets,
+/// flags).
 unsafe extern "C" fn damage(event: *const DamageEvent) {
     if event.is_null() {
         check("damage", false);
@@ -1136,9 +1137,21 @@ unsafe extern "C" fn damage(event: *const DamageEvent) {
     let d = unsafe { *event };
     if with(|s| s.kill.is_some_and(|k| k.victim == d.victim && k.killer == d.attacker)) == Some(true) && d.damage == 1000.0 {
         check("damage", d.inflictor == d.attacker && d.health <= 0.0 && d.weapon >= -1);
+        // #327: a killing blow (1000 damage on a 100-health player) must report the health taken
+        // and not be refused; no kevlar on the test bots.
+        check("damage_taken", d.taken > 0.0 && d.taken <= 100.0);
+        check("damage_refused", d.refused == 0);
     }
     if ours(d.victim) && d.hitgroup > 0 {
         check("damage_hitgroup", d.hitgroup <= 7);
+    }
+    // #327: every event of one of our bots has sane version 8 fields.
+    if ours(d.victim) {
+        check("damage_v8_fields", d.taken >= 0.0 && d.armor_absorbed >= 0.0 && (d.refused == 0 || d.refused == 1));
+        // A traced hit (a kung-fu punch) with a hitgroup must have a pellet count in that group.
+        if d.hitgroup > 0 && d.hitgroup <= 7 && d.refused == 0 {
+            check("damage_pellets", d.pellets[d.hitgroup as usize] > 0);
+        }
     }
 }
 
