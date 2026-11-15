@@ -356,7 +356,8 @@ pub mod plugin_state {
     pub const RESTART: c_int = 10;
 }
 
-/// A player's damage as [`Plugin::damage`] reports it (version 6).
+/// A player's damage as [`Plugin::damage`] reports it (version 6; version 8 adds the fields
+/// after `pos`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DamageEvent {
@@ -381,6 +382,36 @@ pub struct DamageEvent {
     /// That `TraceAttack`'s direction of travel (unit) and hit position, zero without one.
     pub dir: [f32; 3],
     pub pos: [f32; 3],
+
+    // ---- version 8 (#327): what TakeDamage did ---------------------------------------------------
+    /// Health actually lost: the victim's health before minus its health after, 0 when the damage
+    /// was refused or dealt no health (god mode, dead victim, team check).
+    pub taken: f32,
+    /// The damage kevlar absorbed: the asked damage minus the post-kevlar damage that reached
+    /// the health. 0 when kevlar didn't apply (head, legs, no armour, a non-bullet type, or a
+    /// refused hit).
+    pub armor_absorbed: f32,
+    /// 1 when `TakeDamage` returned false or changed nothing (god mode, dead victim, team check
+    /// without friendly fire, `takedamage` off), 0 when damage was applied.
+    pub refused: c_int,
+    /// Per-hitgroup pellet counts for a multi-damage shot (`TraceAttack`s summed by
+    /// `ApplyMultiDamage`): `pellets[hitgroup]` is the number of pellets (or traced hits) that
+    /// hit that group (1 head, 2 chest, 3 stomach, 4/5 arms, 6/7 legs; 0 generic). All zero
+    /// for direct damage (falls, drowning, triggers, explosions without a trace).
+    pub pellets: [u8; 8],
+    /// [`damage_flags`] bits.
+    pub flags: c_int,
+}
+
+/// [`DamageEvent::flags`] (version 8, #327).
+pub mod damage_flags {
+    use core::ffi::c_int;
+    /// The victim was stunting (`iuser4` stunt bits) when the `TraceAttack` hit.
+    pub const STUNTING: c_int = 0x1;
+    /// The victim was in the dodge window when hit (bullets did x0.7).
+    pub const DODGING: c_int = 0x2;
+    /// `glast_headshot`: the hit was a headshot (since the last `ApplyMultiDamage`).
+    pub const HEADSHOT: c_int = 0x4;
 }
 
 /// Bytes of [`KillInfo::weapon_name`], its NUL included.
@@ -1190,6 +1221,11 @@ pub struct PluginApi {
     /// [`INVALID`] (an empty name, or the caller's backend isn't the active one). `skill` is
     /// only reported. `name` and `model` are NUL-terminated byte strings (not UTF-8), used as
     /// they are for the netname, the `model`/`team` keys and the team, as TS's `strcpy`s.
+    ///
+    /// The new bot is spawned as an entity but **observing** (as a joining TS player is: `Spawn`
+    /// puts it in observer mode with `respawn_at`), and stays so until it runs the `respawn`
+    /// command (what the native bots' respawn module does, `crates/server/src/bots/brain.rs`
+    /// `respawn_now`, TS `0x1006f5b8`).
     pub create_bot: unsafe extern "C" fn(plugin: PluginId, name: *const c_char, model: *const c_char, skill: f32) -> c_int,
     /// Kicks a bot (queued as the server's `kick #<userid>`): [`OK`], [`NOT_PLAYER`], or
     /// [`INVALID`] for a human.
@@ -1214,8 +1250,14 @@ pub struct PluginApi {
     /// 3.0 charges no money): with `attachments` (`TSA_*`), a second copy for an akimbo pair
     /// when `akimbo` is non-zero, and `ammo` purchases of its ammo type. [`OK`], [`DEFERRED`],
     /// [`NOT_PLAYER`] or [`INVALID`].
+    ///
+    /// `Killed` clears the loadout (`ResetArmament` `0x93e88`), so a loadout bought while alive
+    /// is gone by the next death's respawn. Buy while the bot is dead (the native bots' respawn
+    /// module does the same, `select_loadout` in its dead think).
     pub buy: extern "C" fn(player: c_int, weapon: c_int, attachments: c_int, akimbo: c_int, ammo: c_int) -> c_int,
     /// Adds an [`item`] (kevlar, stealth shoes) to the loadout.
+    ///
+    /// As with [`buy`](Self::buy), buy while dead: `Killed` clears the loadout.
     pub buy_item: extern "C" fn(player: c_int, item: c_int) -> c_int,
     /// Empties the loadout (`rst_cfg`).
     pub clear_loadout: extern "C" fn(player: c_int) -> c_int,
@@ -1402,5 +1444,37 @@ mod tests {
         }
         // Version 7 appended its flags after version 6's.
         assert_eq!((KUNG_FU, SUPERJUMP), (0x800, 0x1000));
+    }
+
+    /// #327: `DamageEvent` version 8 fields are at the end and the struct's size and alignment
+    /// are stable (plugins read it through a pointer).
+    #[test]
+    fn damage_event_layout() {
+        use core::mem::{align_of, offset_of, size_of};
+        // The version 6 fields end at `pos`.
+        let v6_end = offset_of!(DamageEvent, pos) + size_of::<[f32; 3]>();
+        // Version 8 fields follow, in order.
+        assert_eq!(offset_of!(DamageEvent, taken), v6_end);
+        assert!(offset_of!(DamageEvent, armor_absorbed) > offset_of!(DamageEvent, taken));
+        assert!(offset_of!(DamageEvent, refused) > offset_of!(DamageEvent, armor_absorbed));
+        assert!(offset_of!(DamageEvent, pellets) > offset_of!(DamageEvent, refused));
+        assert!(offset_of!(DamageEvent, flags) > offset_of!(DamageEvent, pellets));
+        // Alignment: C structs, 4-byte aligned.
+        assert_eq!(align_of::<DamageEvent>(), 4);
+        // Size includes the new fields.
+        assert!(size_of::<DamageEvent>() > v6_end);
+    }
+
+    /// #327: `damage_flags` bits are distinct.
+    #[test]
+    fn damage_flags_are_distinct_bits() {
+        use damage_flags::*;
+        let all = [STUNTING, DODGING, HEADSHOT];
+        let mut seen = 0;
+        for f in all {
+            assert_eq!(f.count_ones(), 1, "{f:#x}");
+            assert_eq!(seen & f, 0, "{f:#x} twice");
+            seen |= f;
+        }
     }
 }

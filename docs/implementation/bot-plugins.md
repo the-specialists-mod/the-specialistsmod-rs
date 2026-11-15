@@ -192,8 +192,11 @@ to native, so nothing reloads.
    `activate`, `deactivate`, `adopt_bot`. Register commands (`rcbot ...`) and cvars, read data
    from `data_dir(id)` (`<gamedir>/tsmod/<name>/`: waypoints, learned data).
 3. `add_bot(name, model, skill)`: pick what is empty, call `create_bot(id, name, model, skill)`,
-   keep the index, return it. The strings are bytes as typed (not UTF-8): pass a given name and
-   model on unconverted, or a CP1252 byte turns into U+FFFD's three bytes (#190).
+   keep the index, return it. **The new bot starts observing** (as a joining TS player does:
+   `Spawn` puts it in observer mode), and stays so until it runs the `respawn` command (what the
+   native bots' respawn module does, `crates/server/src/bots/brain.rs` `respawn_now`, TS
+   `0x1006f5b8`). The strings are bytes as typed (not UTF-8): pass a given name and model on
+   unconverted, or a CP1252 byte turns into U+FFFD's three bytes (#190).
 4. Every `start_frame` while active: read the frame once (version 6: `players` for every slot,
    `frame_info`, `items`; read `player_inventory` again only when a `PlayerSnapshot`'s
    `inventory_serial` moved; version 7: the snapshot's `KUNG_FU` / `SUPERJUMP` flags carry the
@@ -205,7 +208,9 @@ to native, so nothing reloads.
    (`entity_info`, `game_state` with the team scores, `objectives` for the HUD's objective list,
    `master_triggered`, `entity_key` for a door's or button's `master`).
 5. Act through the port's code paths: `select_weapon` (TS 3.0 ignores `usercmd.weaponselect`),
-   `buy`/`buy_item` (the loadout bought at the next spawn), `bot_command` (`usepowerup`,
+   `buy`/`buy_item` (the loadout bought at the next spawn; **buy while dead**, because `Killed`
+   clears the loadout via `ResetArmament` 0x93e88, so a loadout bought while alive is gone by
+   the next death's respawn), `bot_command` (`usepowerup`,
    `respawn`, `say`), `drop_weapon`, `kick_bot`. Make an entity from keys as a map does with
    `create_entity`, `entity_key_value` and `spawn_entity` (RCBot's `givetsweapon`: a
    `ts_groundweapon` with `tsweaponid`, then `ham_execute(Ham_Use)` with the bot as activator).

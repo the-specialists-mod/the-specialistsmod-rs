@@ -759,7 +759,9 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
         if dmg > 0.0 {
             let world = engine().entity_of_index(0);
             let info = DamageInfo::new(world, world, dmg, bits::FALL | bits::NEVERGIB);
-            crate::player::damage::take_damage(p, cx, &info);
+            // #326: TS calls the virtual `TakeDamage` here (`PostThink` 0x917b2), so the ham
+            // hooks and the damage event must fire.
+            crate::ham::player_take_damage(p, cx, &info);
         }
     }
     if is_alive(cx) {

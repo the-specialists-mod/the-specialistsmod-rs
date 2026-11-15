@@ -1,7 +1,9 @@
 //! What the version 6 callbacks report beyond the bare event (`plugins` sends them): the damage
 //! event with the hit's hitgroup, direction and position, a sound's responsible player, and the
-//! pickups.
+//! pickups. Version 8 (#327) adds the health taken, armour absorbed, refused flag, per-hitgroup
+//! pellet counts and damage flags (stunting, dodging, headshot).
 
+use crate::player::damage::TakeDamageExtra;
 use crate::rules;
 use crate::world::DamageInfo;
 use goldsrc::Global;
@@ -47,14 +49,27 @@ fn index(e: *mut edict_t) -> c_int {
     if e.is_null() { -1 } else { engine().index_of(e) }
 }
 
-/// Player `e`'s `TakeDamage(dmg)` ran: the `Plugin::damage` event.
-pub fn damage(e: *mut edict_t, dmg: &DamageInfo) {
+/// Player `e`'s `TakeDamage(dmg)` ran: the `Plugin::damage` event, with the version 8 extras
+/// from `take_damage` (#327, #328).
+pub fn damage(e: *mut edict_t, dmg: &DamageInfo, extra: &TakeDamageExtra) {
     let now = engine().time();
     let (hitgroup, dir, pos) = hit_of(e, dmg, now);
     let gun = |a: *mut edict_t| {
         if rules::is_player(a) { super::player_info(engine().index_of(a)).ok().map(|i| i.weapon as u8) } else { None }
     };
     let v = e.v();
+    // #327: health actually lost and whether the damage was refused.
+    let taken = if extra.refused { 0.0 } else { (extra.health_prev - v.health).max(0.0) };
+    // #327: per-hitgroup pellet counts and damage flags from the multi-damage.
+    // Only for `ApplyMultiDamage`'s damage: direct damage has none.
+    let (pellets, mut flags) = if crate::damage::multi::applying() {
+        (crate::damage::multi::pellets(), crate::damage::multi::damage_flags())
+    } else {
+        ([0; 8], 0)
+    };
+    if crate::damage::multi::applying() && crate::damage::multi::headshot() {
+        flags |= ts_plugin_api::damage_flags::HEADSHOT;
+    }
     let event = DamageEvent {
         victim: index(e),
         attacker: index(dmg.attacker),
@@ -67,6 +82,11 @@ pub fn damage(e: *mut edict_t, dmg: &DamageInfo) {
         weapon: crate::rules::scoring::blow_weapon(dmg, dmg.attacker, gun(dmg.attacker)),
         dir,
         pos,
+        taken,
+        armor_absorbed: extra.armor_absorbed,
+        refused: extra.refused as c_int,
+        pellets,
+        flags,
     };
     crate::plugins::damage(e, dmg.attacker, event);
 }

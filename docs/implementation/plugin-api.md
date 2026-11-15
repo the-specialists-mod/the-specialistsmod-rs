@@ -266,6 +266,13 @@ out of the slab (`world.rs` take-out dispatch), so:
 * Messages: only `set_award` (`TSPAward`) and `run_powerup` (`PwUpTime`, `TSMBlur`) send messages
   during the plugin's call, as TS's own paths do. Everything else goes out with the player's next
   `UpdateClientData` (`player::hud`, `weapons::net`), through TS's "on change" caches.
+* **Callback ordering (#328):** on a killing blow, the `damage` callback arrives **before**
+  `player_killed`, `on_kill` and `kill_scored` for the same hit. `take_damage` fires the damage
+  event after the health drop but before `Killed` (`player/damage.rs`), so in the deferred FIFO
+  the damage event is queued first. A plugin that attaches the killing hit to the death (a
+  combat-log death recap) can rely on `damage` with `health <= 0` preceding the kill callbacks.
+  The same holds for every damage source: traced shots, falls, drowning, burn, acid, poison
+  and the teamplay team-change kill (#326).
 
 ## 3. The functions
 
@@ -431,6 +438,17 @@ block's size and layout don't matter to them.
   `DamageEvent`'s hit is the victim's last `TraceAttack` in the same frame: a refused trace (a
   team mate) followed by a direct damage in that frame would lend its hitgroup to that damage.
   `entity_key` keeps only the keys that aren't entvars fields.
+* Version 8 (#326): falls, drowning, burn, acid, poison and the teamplay team-change kill now go
+  through `Ham_TakeDamage` and produce a `DamageEvent` (attacker/inflictor 0 for the world, the
+  damage's `DMG_*` bits). TS calls the virtual `TakeDamage` for all of them (`PostThink` 0x917b2,
+  `WaterMove` 0xd905c, `CheckTimeBasedDamage` 0xda00c, `ChangePlayerTeam` 0xe48e2), so ham hooks
+  fire and a `Ham_TakeDamage` hook that supersedes one of them prevents the damage; the earlier
+  port passed them directly to `CBasePlayer::TakeDamage`'s body and skipped the hooks.
+* Version 8 (#327): `DamageEvent` adds `taken` (health lost), `armor_absorbed`, `refused`, `pellets`
+  (per-hitgroup pellet counts) and `flags` (stunting, dodging, headshot). `pellets` comes from the
+  multi-damage's `TraceAttack`s (one entry per pellet that added to it); `flags` accumulates the
+  stunt/dodge state of every `TraceAttack` and `glast_headshot`. Direct damage (falls, drowning,
+  triggers) has all-zero `pellets` and `flags`.
 * Version 7: a detached plugin's commands and cvars stay registered with the engine (doing
   nothing, and keeping their values): GoldSrc can't remove either. A backend that registers late
   takes over only from native; while another plugin backend runs, the map reload (`reload.rs`)
