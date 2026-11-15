@@ -110,25 +110,29 @@ struct Iface {
 
 static CLIENT_VGUI: Iface = Iface { vtable: &VTABLE };
 
-/// `CreateInterface(name, returnCode)`: the client's interface factory. Only `VClientVGUI001`
-/// is provided; GameUI also asks for `GameClientExports001`, which TS doesn't expose either.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn CreateInterface(name: *const c_char, ret: *mut c_int) -> *mut c_void {
-    // SAFETY: the engine passes null or a NUL-terminated interface name valid for this call.
-    let found = !name.is_null() && unsafe { CStr::from_ptr(name) } == CLIENT_VGUI_VERSION;
-    // SAFETY: `ret` is null or the caller's out-pointer.
-    if let Some(r) = unsafe { ret.as_mut() } {
-        *r = if found { IFACE_OK } else { IFACE_FAILED };
+goldsrc::stack_aligned! {
+    /// `CreateInterface(name, returnCode)`: the client's interface factory. Only `VClientVGUI001`
+    /// is provided; GameUI also asks for `GameClientExports001`, which TS doesn't expose either.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn CreateInterface(name: *const c_char, ret: *mut c_int) -> *mut c_void {
+        // SAFETY: the engine passes null or a NUL-terminated interface name valid for this call.
+        let found = !name.is_null() && unsafe { CStr::from_ptr(name) } == CLIENT_VGUI_VERSION;
+        // SAFETY: `ret` is null or the caller's out-pointer.
+        if let Some(r) = unsafe { ret.as_mut() } {
+            *r = if found { IFACE_OK } else { IFACE_FAILED };
+        }
+        // The engine only calls methods on the object, which has no mutable state.
+        if found { (&raw const CLIENT_VGUI).cast_mut().cast() } else { std::ptr::null_mut() }
     }
-    // The engine only calls methods on the object, which has no mutable state.
-    if found { (&raw const CLIENT_VGUI).cast_mut().cast() } else { std::ptr::null_mut() }
 }
 
-/// `ClientFactory()` (`cldll_func_t::pClientFactory`, SDK `engine/APIProxy.h`): returns the
-/// factory above. Steam's engine reads the client's `CreateInterface` only if this export exists.
-#[unsafe(no_mangle)]
-pub extern "C" fn ClientFactory() -> *mut c_void {
-    CreateInterface as *mut c_void
+goldsrc::stack_aligned! {
+    /// `ClientFactory()` (`cldll_func_t::pClientFactory`, SDK `engine/APIProxy.h`): returns the
+    /// factory above. Steam's engine reads the client's `CreateInterface` only if this export exists.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ClientFactory() -> *mut c_void {
+        CreateInterface as *mut c_void
+    }
 }
 
 #[cfg(test)]

@@ -273,6 +273,12 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   the `--release-debug` libraries of the same commit: same code, with debug info.
 - **Stopping engines:** use `pkill -x xash` (or `xash3d`). `pkill -f` patterns can match your
   own shell.
+- **i686 Linux stack alignment (issue #199).** Old metamod plugins (AMX Mod X 1.8.2) call into the
+  game library with `esp` = 8 mod 16. Rust's `i686-unknown-linux-gnu` assumes 16-byte alignment
+  for SSE spills, so every `extern "C"` entry point the engine or a plugin can reach must be
+  wrapped with `goldsrc::stack_aligned!` (or the trampoline in `export_entity_class!`). Adding a
+  new `extern "C"` callback, export or table entry on i686 Linux without that wrapper will crash
+  under AMX Mod X 1.8.2. See `goldsrc::stack_align` for the mechanism.
 
 ## Licensing
 

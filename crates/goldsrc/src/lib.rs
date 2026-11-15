@@ -26,6 +26,7 @@ pub mod ext;
 pub mod msg;
 pub mod panic;
 pub mod pmove;
+pub mod stack_align;
 pub mod util;
 
 #[cfg(feature = "client")]
@@ -53,11 +54,39 @@ unsafe impl<T> Sync for Global<T> {}
 /// `entvars_t`, so every placeable class needs one. `#[no_mangle]` is an unsafe attribute in
 /// Rust 2024, so this macro carries the only `allow(unsafe_code)` the game crates see; the
 /// generated function itself is safe and just calls `$create`.
+///
+/// On i686 Linux the generated function is a stack-realigning trampoline (issue #199,
+/// [`stack_align`]): old callers (AMX Mod X 1.8.2) may call with `esp` aligned to only
+/// 4 bytes, crashing Rust's SSE spills.
 #[macro_export]
 macro_rules! export_entity_class {
     ($class:ident, $create:expr) => {
+        // -- i686 Linux: body function + naked trampoline (issue #199) ---
+        //
+        // Both functions are inside a `const _: () = { ... }` so the body's fixed name `_body`
+        // cannot collide across invocations or with existing modules (`soundent`, `shrapnel`).
+        // `#[unsafe(no_mangle)]` on the trampoline gives it the classname symbol the engine
+        // resolves by `dlsym`.
+        #[cfg(all(target_os = "linux", target_arch = "x86"))]
         #[allow(unsafe_code)]
-        #[allow(non_snake_case)] // the export is the classname, e.g. TS's `DelayedUse`
+        const _: () = {
+            #[inline(never)]
+            extern "C" fn _body(pev: *mut $crate::sys::entvars_t) {
+                ($create)(pev)
+            }
+
+            #[allow(non_snake_case)]
+            #[unsafe(no_mangle)]
+            #[unsafe(naked)]
+            pub unsafe extern "C" fn $class(_pev: *mut $crate::sys::entvars_t) {
+                $crate::_stack_align_trampoline_entity!(_body)
+            }
+        };
+
+        // -- every other target: the original safe export ---
+        #[cfg(not(all(target_os = "linux", target_arch = "x86")))]
+        #[allow(unsafe_code)]
+        #[allow(non_snake_case)]
         #[unsafe(no_mangle)]
         pub extern "C" fn $class(pev: *mut $crate::sys::entvars_t) {
             ($create)(pev)

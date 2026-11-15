@@ -138,255 +138,321 @@ unsafe fn put_bytes(buf: *mut c_char, len: c_int, s: &[u8]) -> c_int {
 
 // ---- the host -------------------------------------------------------------------------------------
 
-unsafe extern "C" fn log(plugin: PluginId, level: c_int, msg: *const c_char) {
-    // SAFETY: the table's contract for string arguments.
-    if let Some(m) = unsafe { arg(msg) } {
-        host::log(plugin, level, &m.to_string_lossy());
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn log(plugin: PluginId, level: c_int, msg: *const c_char) {
+        // SAFETY: the table's contract for string arguments.
+        if let Some(m) = unsafe { arg(msg) } {
+            host::log(plugin, level, &m.to_string_lossy());
+        }
     }
 }
 
-unsafe extern "C" fn data_dir(plugin: PluginId, buf: *mut c_char, len: c_int) -> c_int {
-    match host::data_dir(plugin) {
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn data_dir(plugin: PluginId, buf: *mut c_char, len: c_int) -> c_int {
+        match host::data_dir(plugin) {
+            // SAFETY: the table's contract for buffers.
+            Ok(d) => unsafe { put_str(buf, len, &d) },
+            Err(e) => e,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn map_name(buf: *mut c_char, len: c_int) -> c_int {
+        let eng = goldsrc::server::engine();
+        let name = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
         // SAFETY: the table's contract for buffers.
-        Ok(d) => unsafe { put_str(buf, len, &d) },
-        Err(e) => e,
+        unsafe { put_str(buf, len, &name) }
     }
 }
 
-unsafe extern "C" fn map_name(buf: *mut c_char, len: c_int) -> c_int {
-    let eng = goldsrc::server::engine();
-    let name = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
-    // SAFETY: the table's contract for buffers.
-    unsafe { put_str(buf, len, &name) }
-}
-
-unsafe extern "C" fn register_command(plugin: PluginId, name: *const c_char, f: ts_plugin_api::CommandFn) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
-    let call = move |argv: &[&CStr]| {
-        let ptrs: Vec<*const c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-        // SAFETY: `f` is the plugin's command function, callable on the engine's thread for the
-        // process (libraries stay loaded); `ptrs` holds `argc` NUL-terminated strings that live
-        // for the call.
-        unsafe { f(ptrs.len() as c_int, ptrs.as_ptr()) }
-    };
-    host::register_command(plugin, name, Rc::new(call))
-}
-
-unsafe extern "C" fn register_cvar(_plugin: PluginId, name: *const c_char, value: *const c_char, flags: c_int) -> *mut c_void {
-    // SAFETY: the table's contract for string arguments.
-    let (Some(name), value) = (unsafe { arg(name) }, unsafe { arg(value) }) else { return std::ptr::null_mut() };
-    let value = value.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
-    host::register_cvar(&name.to_string_lossy(), &value, flags).cast()
-}
-
-unsafe extern "C" fn register_bot_backend(plugin: PluginId, name: *const c_char, backend: *const BotBackend) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
-    if backend.is_null() {
-        return INVALID;
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn register_command(plugin: PluginId, name: *const c_char, f: ts_plugin_api::CommandFn) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+        let call = move |argv: &[&CStr]| {
+            let ptrs: Vec<*const c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+            // SAFETY: `f` is the plugin's command function, callable on the engine's thread for the
+            // process (libraries stay loaded); `ptrs` holds `argc` NUL-terminated strings that live
+            // for the call.
+            unsafe { f(ptrs.len() as c_int, ptrs.as_ptr()) }
+        };
+        host::register_command(plugin, name, Rc::new(call))
     }
-    // SAFETY: a non-NULL `backend` points to a `BotBackend` the caller owns for the call; only
-    // its `size` is read first, then as many bytes as both sides know.
-    let size = unsafe { (&raw const (*backend).size).read_unaligned() } as usize;
-    if size < size_of::<BotBackend>() {
-        return INVALID;
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn register_cvar(_plugin: PluginId, name: *const c_char, value: *const c_char, flags: c_int) -> *mut c_void {
+        // SAFETY: the table's contract for string arguments.
+        let (Some(name), value) = (unsafe { arg(name) }, unsafe { arg(value) }) else { return std::ptr::null_mut() };
+        let value = value.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
+        host::register_cvar(&name.to_string_lossy(), &value, flags).cast()
     }
-    // SAFETY: as above, `size_of::<BotBackend>()` bytes are readable.
-    let b = unsafe { backend.read_unaligned() };
-    crate::plugins::register_bot_backend(plugin, name, b)
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn register_bot_backend(plugin: PluginId, name: *const c_char, backend: *const BotBackend) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+        if backend.is_null() {
+            return INVALID;
+        }
+        // SAFETY: a non-NULL `backend` points to a `BotBackend` the caller owns for the call; only
+        // its `size` is read first, then as many bytes as both sides know.
+        let size = unsafe { (&raw const (*backend).size).read_unaligned() } as usize;
+        if size < size_of::<BotBackend>() {
+            return INVALID;
+        }
+        // SAFETY: as above, `size_of::<BotBackend>()` bytes are readable.
+        let b = unsafe { backend.read_unaligned() };
+        crate::plugins::register_bot_backend(plugin, name, b)
+    }
 }
 
 // ---- players ------------------------------------------------------------------------------------
 
-/// Guard: a NULL `out` gives `NOT_PLAYER` (the contract asks for a valid pointer); nothing is
-/// written on failure.
-unsafe extern "C" fn player_info(player: c_int, out: *mut PlayerInfo) -> c_int {
-    if out.is_null() {
-        return NOT_PLAYER;
-    }
-    match api::player_info(player) {
-        Ok(info) => {
-            // SAFETY: the caller passes a `PlayerInfo` valid for writes (the table's contract);
-            // `write_unaligned` doesn't rely on its alignment.
-            unsafe { out.write_unaligned(info) };
-            OK
+goldsrc::stack_aligned! {
+    /// Guard: a NULL `out` gives `NOT_PLAYER` (the contract asks for a valid pointer); nothing is
+    /// written on failure.
+    unsafe extern "C" fn player_info(player: c_int, out: *mut PlayerInfo) -> c_int {
+        if out.is_null() {
+            return NOT_PLAYER;
         }
-        Err(code) => code,
-    }
-}
-
-unsafe extern "C" fn player_inventory(player: c_int, out: *mut WeaponEntry, max: c_int) -> c_int {
-    match api::player_inventory(player) {
-        Ok(list) => {
-            if !out.is_null() {
-                for (i, w) in list.iter().take(max.max(0) as usize).enumerate() {
-                    // SAFETY: the caller passes `out` writable for `max` entries (the table's
-                    // contract), and `i < max`.
-                    unsafe { out.add(i).write_unaligned(*w) };
-                }
+        match api::player_info(player) {
+            Ok(info) => {
+                // SAFETY: the caller passes a `PlayerInfo` valid for writes (the table's contract);
+                // `write_unaligned` doesn't rely on its alignment.
+                unsafe { out.write_unaligned(info) };
+                OK
             }
-            list.len() as c_int
+            Err(code) => code,
         }
-        Err(code) => code,
     }
 }
 
-extern "C" fn set_cash(player: c_int, cash: c_int) -> c_int {
-    api::set_cash(player, cash)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn player_inventory(player: c_int, out: *mut WeaponEntry, max: c_int) -> c_int {
+        match api::player_inventory(player) {
+            Ok(list) => {
+                if !out.is_null() {
+                    for (i, w) in list.iter().take(max.max(0) as usize).enumerate() {
+                        // SAFETY: the caller passes `out` writable for `max` entries (the table's
+                        // contract), and `i < max`.
+                        unsafe { out.add(i).write_unaligned(*w) };
+                    }
+                }
+                list.len() as c_int
+            }
+            Err(code) => code,
+        }
+    }
 }
 
-extern "C" fn set_free_slots(player: c_int, slots: c_int) -> c_int {
-    api::set_free_slots(player, slots)
+goldsrc::stack_aligned! {
+    extern "C" fn set_cash(player: c_int, cash: c_int) -> c_int {
+        api::set_cash(player, cash)
+    }
 }
 
-extern "C" fn set_award(player: c_int, award: c_int) -> c_int {
-    api::set_award(player, award)
+goldsrc::stack_aligned! {
+    extern "C" fn set_free_slots(player: c_int, slots: c_int) -> c_int {
+        api::set_free_slots(player, slots)
+    }
 }
 
-extern "C" fn run_powerup(player: c_int, powerup: c_int, duration: f32) -> c_int {
-    api::run_powerup(player, powerup, duration)
+goldsrc::stack_aligned! {
+    extern "C" fn set_award(player: c_int, award: c_int) -> c_int {
+        api::set_award(player, award)
+    }
 }
 
-extern "C" fn set_speed(player: c_int, speed: f32, aura: f32, duration: f32) -> c_int {
-    api::set_speed(player, speed, aura, duration)
+goldsrc::stack_aligned! {
+    extern "C" fn run_powerup(player: c_int, powerup: c_int, duration: f32) -> c_int {
+        api::run_powerup(player, powerup, duration)
+    }
 }
 
-extern "C" fn set_physics_speed(player: c_int, speed: f32) -> c_int {
-    api::set_physics_speed(player, speed)
+goldsrc::stack_aligned! {
+    extern "C" fn set_speed(player: c_int, speed: f32, aura: f32, duration: f32) -> c_int {
+        api::set_speed(player, speed, aura, duration)
+    }
 }
 
-extern "C" fn set_bullet_trail(player: c_int, on: c_int) -> c_int {
-    api::set_bullet_trail(player, on)
+goldsrc::stack_aligned! {
+    extern "C" fn set_physics_speed(player: c_int, speed: f32) -> c_int {
+        api::set_physics_speed(player, speed)
+    }
 }
 
-extern "C" fn set_weapon_ammo(player: c_int, weapon: c_int, clip: c_int, ammo: c_int) -> c_int {
-    api::set_weapon_ammo(player, weapon, clip, ammo)
+goldsrc::stack_aligned! {
+    extern "C" fn set_bullet_trail(player: c_int, on: c_int) -> c_int {
+        api::set_bullet_trail(player, on)
+    }
+}
+
+goldsrc::stack_aligned! {
+    extern "C" fn set_weapon_ammo(player: c_int, weapon: c_int, clip: c_int, ammo: c_int) -> c_int {
+        api::set_weapon_ammo(player, weapon, clip, ammo)
+    }
 }
 
 // ---- entities and the game ---------------------------------------------------------------------
 
-extern "C" fn projectile_owner(entity: c_int) -> c_int {
-    api::projectile_owner(entity)
+goldsrc::stack_aligned! {
+    extern "C" fn projectile_owner(entity: c_int) -> c_int {
+        api::projectile_owner(entity)
+    }
 }
 
-unsafe extern "C" fn entity_info(entity: c_int, out: *mut EntityInfo) -> c_int {
-    if out.is_null() {
-        return INVALID;
-    }
-    match api::world_info::entity_info(entity) {
-        Ok(info) => {
-            // SAFETY: the caller passes an `EntityInfo` valid for writes (the table's contract).
-            unsafe { out.write_unaligned(info) };
-            OK
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn entity_info(entity: c_int, out: *mut EntityInfo) -> c_int {
+        if out.is_null() {
+            return INVALID;
         }
-        Err(code) => code,
-    }
-}
-
-unsafe extern "C" fn master_triggered(master: *const c_char, activator: c_int) -> c_int {
-    // SAFETY: the table's contract for string arguments; NULL is no master.
-    let name = unsafe { arg(master) }.unwrap_or(c"");
-    api::world_info::master_triggered(name, activator)
-}
-
-unsafe extern "C" fn game_state(out: *mut GameState) -> c_int {
-    if out.is_null() {
-        return INVALID;
-    }
-    let s = api::world_info::game_state();
-    // SAFETY: the caller passes a `GameState` valid for writes (the table's contract).
-    unsafe { out.write_unaligned(s) };
-    OK
-}
-
-unsafe extern "C" fn objectives(player: c_int, out: *mut ObjectiveInfo, max: c_int) -> c_int {
-    match api::world_info::objectives(player) {
-        Ok(list) => {
-            if !out.is_null() {
-                for (i, o) in list.iter().take(max.max(0) as usize).enumerate() {
-                    // SAFETY: the caller passes `out` writable for `max` entries (the table's
-                    // contract), and `i < max`.
-                    unsafe { out.add(i).write_unaligned(*o) };
-                }
+        match api::world_info::entity_info(entity) {
+            Ok(info) => {
+                // SAFETY: the caller passes an `EntityInfo` valid for writes (the table's contract).
+                unsafe { out.write_unaligned(info) };
+                OK
             }
-            list.len() as c_int
+            Err(code) => code,
         }
-        Err(code) => code,
     }
 }
 
-unsafe extern "C" fn create_entity(classname: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(class) = (unsafe { arg(classname) }) else { return INVALID };
-    api::world_info::create_entity(class)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn master_triggered(master: *const c_char, activator: c_int) -> c_int {
+        // SAFETY: the table's contract for string arguments; NULL is no master.
+        let name = unsafe { arg(master) }.unwrap_or(c"");
+        api::world_info::master_triggered(name, activator)
+    }
 }
 
-unsafe extern "C" fn entity_key_value(entity: c_int, key: *const c_char, value: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let (Some(key), Some(value)) = (unsafe { arg(key) }, unsafe { arg(value) }) else { return INVALID };
-    api::world_info::entity_key_value(entity, key, value)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn game_state(out: *mut GameState) -> c_int {
+        if out.is_null() {
+            return INVALID;
+        }
+        let s = api::world_info::game_state();
+        // SAFETY: the caller passes a `GameState` valid for writes (the table's contract).
+        unsafe { out.write_unaligned(s) };
+        OK
+    }
 }
 
-extern "C" fn spawn_entity(entity: c_int) -> c_int {
-    api::world_info::spawn_entity(entity)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn objectives(player: c_int, out: *mut ObjectiveInfo, max: c_int) -> c_int {
+        match api::world_info::objectives(player) {
+            Ok(list) => {
+                if !out.is_null() {
+                    for (i, o) in list.iter().take(max.max(0) as usize).enumerate() {
+                        // SAFETY: the caller passes `out` writable for `max` entries (the table's
+                        // contract), and `i < max`.
+                        unsafe { out.add(i).write_unaligned(*o) };
+                    }
+                }
+                list.len() as c_int
+            }
+            Err(code) => code,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn create_entity(classname: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(class) = (unsafe { arg(classname) }) else { return INVALID };
+        api::world_info::create_entity(class)
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn entity_key_value(entity: c_int, key: *const c_char, value: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let (Some(key), Some(value)) = (unsafe { arg(key) }, unsafe { arg(value) }) else { return INVALID };
+        api::world_info::entity_key_value(entity, key, value)
+    }
+}
+
+goldsrc::stack_aligned! {
+    extern "C" fn spawn_entity(entity: c_int) -> c_int {
+        api::world_info::spawn_entity(entity)
+    }
 }
 
 // ---- bots -----------------------------------------------------------------------------------------
 
-unsafe extern "C" fn create_bot(plugin: PluginId, name: *const c_char, model: *const c_char, skill: f32) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let (Some(name), model) = (unsafe { arg(name) }, unsafe { arg(model) }) else { return INVALID };
-    api::bots::create_bot(plugin, name, model.unwrap_or(c""), skill)
-}
-
-extern "C" fn kick_bot(player: c_int) -> c_int {
-    api::bots::kick_bot(player)
-}
-
-/// Guard: a NULL `cmd` is `INVALID`; a NULL `out` is allowed (no result wanted).
-unsafe extern "C" fn run_cmd(player: c_int, cmd: *const BotCmd, out: *mut BotCmdResult) -> c_int {
-    if cmd.is_null() {
-        return INVALID;
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn create_bot(plugin: PluginId, name: *const c_char, model: *const c_char, skill: f32) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let (Some(name), model) = (unsafe { arg(name) }, unsafe { arg(model) }) else { return INVALID };
+        api::bots::create_bot(plugin, name, model.unwrap_or(c""), skill)
     }
-    // SAFETY: the caller passes a `BotCmd` valid for reads (the table's contract).
-    let c = unsafe { cmd.read_unaligned() };
-    match api::bots::run_cmd(player, &c) {
-        Ok(r) => {
-            if !out.is_null() {
-                // SAFETY: a non-NULL `out` is a `BotCmdResult` valid for writes (the contract).
-                unsafe { out.write_unaligned(r) };
-            }
-            OK
+}
+
+goldsrc::stack_aligned! {
+    extern "C" fn kick_bot(player: c_int) -> c_int {
+        api::bots::kick_bot(player)
+    }
+}
+
+goldsrc::stack_aligned! {
+    /// Guard: a NULL `cmd` is `INVALID`; a NULL `out` is allowed (no result wanted).
+    unsafe extern "C" fn run_cmd(player: c_int, cmd: *const BotCmd, out: *mut BotCmdResult) -> c_int {
+        if cmd.is_null() {
+            return INVALID;
         }
-        Err(code) => code,
+        // SAFETY: the caller passes a `BotCmd` valid for reads (the table's contract).
+        let c = unsafe { cmd.read_unaligned() };
+        match api::bots::run_cmd(player, &c) {
+            Ok(r) => {
+                if !out.is_null() {
+                    // SAFETY: a non-NULL `out` is a `BotCmdResult` valid for writes (the contract).
+                    unsafe { out.write_unaligned(r) };
+                }
+                OK
+            }
+            Err(code) => code,
+        }
     }
 }
 
-unsafe extern "C" fn bot_command(player: c_int, line: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(line) = (unsafe { arg(line) }) else { return INVALID };
-    api::bots::bot_command(player, &line.to_string_lossy())
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn bot_command(player: c_int, line: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(line) = (unsafe { arg(line) }) else { return INVALID };
+        api::bots::bot_command(player, &line.to_string_lossy())
+    }
 }
 
-extern "C" fn select_weapon(player: c_int, weapon: c_int) -> c_int {
-    api::bots::select_weapon(player, weapon)
+goldsrc::stack_aligned! {
+    extern "C" fn select_weapon(player: c_int, weapon: c_int) -> c_int {
+        api::bots::select_weapon(player, weapon)
+    }
 }
 
-extern "C" fn buy(player: c_int, weapon: c_int, attachments: c_int, akimbo: c_int, ammo: c_int) -> c_int {
-    api::bots::buy(player, weapon, attachments, akimbo, ammo)
+goldsrc::stack_aligned! {
+    extern "C" fn buy(player: c_int, weapon: c_int, attachments: c_int, akimbo: c_int, ammo: c_int) -> c_int {
+        api::bots::buy(player, weapon, attachments, akimbo, ammo)
+    }
 }
 
-extern "C" fn buy_item(player: c_int, item: c_int) -> c_int {
-    api::bots::buy_item(player, item)
+goldsrc::stack_aligned! {
+    extern "C" fn buy_item(player: c_int, item: c_int) -> c_int {
+        api::bots::buy_item(player, item)
+    }
 }
 
-extern "C" fn clear_loadout(player: c_int) -> c_int {
-    api::bots::clear_loadout(player)
+goldsrc::stack_aligned! {
+    extern "C" fn clear_loadout(player: c_int) -> c_int {
+        api::bots::clear_loadout(player)
+    }
 }
 
-extern "C" fn drop_weapon(player: c_int, weapon: c_int) -> c_int {
-    api::bots::drop_weapon(player, weapon)
+goldsrc::stack_aligned! {
+    extern "C" fn drop_weapon(player: c_int, weapon: c_int) -> c_int {
+        api::bots::drop_weapon(player, weapon)
+    }
 }
 
 // ---- entity hooks ---------------------------------------------------------------------------------
@@ -394,9 +460,11 @@ extern "C" fn drop_weapon(player: c_int, weapon: c_int) -> c_int {
 /// The plugin's hook, as `ham_set_hook` installed it.
 static HOOK: Global<Cell<Option<ham::Hook>>> = Global(Cell::new(None));
 
-extern "C" fn ham_set_hook(hook: Option<ham::Hook>) {
-    HOOK.0.set(hook);
-    hooks::set_hook(hook.map(|_| call_hook as hooks::HookFn));
+goldsrc::stack_aligned! {
+    extern "C" fn ham_set_hook(hook: Option<ham::Hook>) {
+        HOOK.0.set(hook);
+        hooks::set_hook(hook.map(|_| call_hook as hooks::HookFn));
+    }
 }
 
 /// The plugin's hook as `ts_server::ham` calls it.
@@ -409,104 +477,120 @@ fn call_hook(call: &mut HamCall, post: bool) -> c_int {
     unsafe { hook(call, post as c_int) }
 }
 
-extern "C" fn ham_watch(ham: c_int, on: c_int) -> c_int {
-    hooks::watch(ham, on != 0)
-}
-
-extern "C" fn ham_supported(ham: c_int, class: c_int) -> c_int {
-    hooks::supported(ham, class)
-}
-
-/// Guard: a NULL name is `INVALID`.
-unsafe extern "C" fn class_id(classname: *const c_char) -> c_int {
-    if classname.is_null() {
-        return INVALID;
+goldsrc::stack_aligned! {
+    extern "C" fn ham_watch(ham: c_int, on: c_int) -> c_int {
+        hooks::watch(ham, on != 0)
     }
-    // SAFETY: a non-NULL name is the caller's NUL-terminated string, read for this call only.
-    hooks::class_id(unsafe { CStr::from_ptr(classname) })
 }
 
-extern "C" fn entity_class_id(entity: c_int) -> c_int {
-    hooks::entity_class_id(entity)
-}
-
-/// The call is copied in and only `ret` is written back, so a plugin passing the `HamCall` of the
-/// hook it is in (or nesting another `ham_execute`) never aliases a live reference. The pointer
-/// arguments are read here: a `TRACE` argument's `TraceResult` (copied in and back) and
-/// `Ham_Keyvalue`'s `KeyValueData` (its strings read, `fHandled` written back). Guard: a NULL
-/// `call` is `INVALID`, and so is a NULL `TraceResult` / `KeyValueData` / key / value.
-unsafe extern "C" fn ham_execute(call: *mut HamCall, run_hooks: c_int) -> c_int {
-    if call.is_null() {
-        return INVALID;
+goldsrc::stack_aligned! {
+    extern "C" fn ham_supported(ham: c_int, class: c_int) -> c_int {
+        hooks::supported(ham, class)
     }
-    // SAFETY: the caller passes a `HamCall` valid for reads and writes for this call (the table's
-    // contract); `read_unaligned` doesn't rely on its alignment.
-    let mut c = unsafe { call.read_unaligned() };
-    let argc = usize::try_from(c.argc).unwrap_or(0).min(ham::MAX_ARGS);
-    let trace_ptr =
-        c.args[..argc].iter().find(|a| a.kind == ham::kind::TRACE).map(|a| a.p.cast_mut().cast::<TraceResult>()).filter(|p| !p.is_null());
-    // SAFETY: a `TRACE` argument points to a `TraceResult` valid for the call (contract).
-    let mut trace = trace_ptr.map(|p| unsafe { p.read_unaligned() });
-    let kvd_ptr = (c.ham == hooks::id::KEYVALUE as c_int && argc >= 1)
-        .then(|| c.args[0].p.cast_mut().cast::<KeyValueData>())
-        .filter(|p| !p.is_null());
-    // SAFETY: `Ham_Keyvalue`'s argument points to a `KeyValueData` valid for the call (contract).
-    let kvd = kvd_ptr.map(|p| unsafe { p.read_unaligned() });
-    let mut handled = kvd.map_or(0, |k| k.fHandled);
-    let strings = kvd.and_then(|k| {
-        let ok = !k.szKeyName.is_null() && !k.szValue.is_null();
-        // SAFETY: its non-NULL strings are NUL-terminated and live for the call (contract).
-        ok.then(|| unsafe {
-            let class = (!k.szClassName.is_null()).then(|| CStr::from_ptr(k.szClassName));
-            (class, CStr::from_ptr(k.szKeyName), CStr::from_ptr(k.szValue))
-        })
-    });
-    let r = {
-        let mut ptrs = hooks::Pointers {
-            trace: trace.as_mut(),
-            kvd: strings.map(|(class, key, value)| hooks::KeyValue { class, key, value, handled: &mut handled }),
+}
+
+goldsrc::stack_aligned! {
+    /// Guard: a NULL name is `INVALID`.
+    unsafe extern "C" fn class_id(classname: *const c_char) -> c_int {
+        if classname.is_null() {
+            return INVALID;
+        }
+        // SAFETY: a non-NULL name is the caller's NUL-terminated string, read for this call only.
+        hooks::class_id(unsafe { CStr::from_ptr(classname) })
+    }
+}
+
+goldsrc::stack_aligned! {
+    extern "C" fn entity_class_id(entity: c_int) -> c_int {
+        hooks::entity_class_id(entity)
+    }
+}
+
+goldsrc::stack_aligned! {
+    /// The call is copied in and only `ret` is written back, so a plugin passing the `HamCall` of the
+    /// hook it is in (or nesting another `ham_execute`) never aliases a live reference. The pointer
+    /// arguments are read here: a `TRACE` argument's `TraceResult` (copied in and back) and
+    /// `Ham_Keyvalue`'s `KeyValueData` (its strings read, `fHandled` written back). Guard: a NULL
+    /// `call` is `INVALID`, and so is a NULL `TraceResult` / `KeyValueData` / key / value.
+    unsafe extern "C" fn ham_execute(call: *mut HamCall, run_hooks: c_int) -> c_int {
+        if call.is_null() {
+            return INVALID;
+        }
+        // SAFETY: the caller passes a `HamCall` valid for reads and writes for this call (the table's
+        // contract); `read_unaligned` doesn't rely on its alignment.
+        let mut c = unsafe { call.read_unaligned() };
+        let argc = usize::try_from(c.argc).unwrap_or(0).min(ham::MAX_ARGS);
+        let trace_ptr =
+            c.args[..argc].iter().find(|a| a.kind == ham::kind::TRACE).map(|a| a.p.cast_mut().cast::<TraceResult>()).filter(|p| !p.is_null());
+        // SAFETY: a `TRACE` argument points to a `TraceResult` valid for the call (contract).
+        let mut trace = trace_ptr.map(|p| unsafe { p.read_unaligned() });
+        let kvd_ptr = (c.ham == hooks::id::KEYVALUE as c_int && argc >= 1)
+            .then(|| c.args[0].p.cast_mut().cast::<KeyValueData>())
+            .filter(|p| !p.is_null());
+        // SAFETY: `Ham_Keyvalue`'s argument points to a `KeyValueData` valid for the call (contract).
+        let kvd = kvd_ptr.map(|p| unsafe { p.read_unaligned() });
+        let mut handled = kvd.map_or(0, |k| k.fHandled);
+        let strings = kvd.and_then(|k| {
+            let ok = !k.szKeyName.is_null() && !k.szValue.is_null();
+            // SAFETY: its non-NULL strings are NUL-terminated and live for the call (contract).
+            ok.then(|| unsafe {
+                let class = (!k.szClassName.is_null()).then(|| CStr::from_ptr(k.szClassName));
+                (class, CStr::from_ptr(k.szKeyName), CStr::from_ptr(k.szValue))
+            })
+        });
+        let r = {
+            let mut ptrs = hooks::Pointers {
+                trace: trace.as_mut(),
+                kvd: strings.map(|(class, key, value)| hooks::KeyValue { class, key, value, handled: &mut handled }),
+            };
+            hooks::execute(&mut c, &mut ptrs, run_hooks != 0)
         };
-        hooks::execute(&mut c, &mut ptrs, run_hooks != 0)
-    };
-    if let (Some(p), Some(t)) = (trace_ptr, trace) {
+        if let (Some(p), Some(t)) = (trace_ptr, trace) {
+            // SAFETY: as when it was read.
+            unsafe { p.write_unaligned(t) };
+        }
+        if let Some(p) = kvd_ptr.filter(|_| strings.is_some()) {
+            // SAFETY: as when it was read; only `fHandled` is written.
+            unsafe { (&raw mut (*p).fHandled).write_unaligned(handled) };
+        }
         // SAFETY: as when it was read.
-        unsafe { p.write_unaligned(t) };
+        unsafe { (&raw mut (*call).ret).write_unaligned(c.ret) };
+        r
     }
-    if let Some(p) = kvd_ptr.filter(|_| strings.is_some()) {
-        // SAFETY: as when it was read; only `fHandled` is written.
-        unsafe { (&raw mut (*p).fHandled).write_unaligned(handled) };
-    }
-    // SAFETY: as when it was read.
-    unsafe { (&raw mut (*call).ret).write_unaligned(c.ret) };
-    r
 }
 
 // ---- version 5: listeners, private data --------------------------------------------------------
 
-/// Guard: NULL is `INVALID`, and so is a descriptor whose `size` isn't this version's (only `size`
-/// is read then).
-unsafe extern "C" fn add_listener(plugin: PluginId, listener: *const ts_plugin_api::Plugin) -> c_int {
-    if listener.is_null() {
-        return INVALID;
+goldsrc::stack_aligned! {
+    /// Guard: NULL is `INVALID`, and so is a descriptor whose `size` isn't this version's (only `size`
+    /// is read then).
+    unsafe extern "C" fn add_listener(plugin: PluginId, listener: *const ts_plugin_api::Plugin) -> c_int {
+        if listener.is_null() {
+            return INVALID;
+        }
+        // SAFETY: a non-NULL `listener` points to a `Plugin` the caller owns for the call; its `size`
+        // (the first field) is read first, then the whole descriptor once it says it is that big.
+        let size = unsafe { (&raw const (*listener).size).read_unaligned() } as usize;
+        if size != size_of::<ts_plugin_api::Plugin>() {
+            return INVALID;
+        }
+        // SAFETY: as above; `size_of::<Plugin>()` bytes are readable. Its callbacks are the plugin's,
+        // callable on the engine's thread until it removes the listener (the table's contract).
+        let desc = unsafe { listener.read_unaligned() };
+        crate::plugins::add_listener(plugin, desc)
     }
-    // SAFETY: a non-NULL `listener` points to a `Plugin` the caller owns for the call; its `size`
-    // (the first field) is read first, then the whole descriptor once it says it is that big.
-    let size = unsafe { (&raw const (*listener).size).read_unaligned() } as usize;
-    if size != size_of::<ts_plugin_api::Plugin>() {
-        return INVALID;
-    }
-    // SAFETY: as above; `size_of::<Plugin>()` bytes are readable. Its callbacks are the plugin's,
-    // callable on the engine's thread until it removes the listener (the table's contract).
-    let desc = unsafe { listener.read_unaligned() };
-    crate::plugins::add_listener(plugin, desc)
 }
 
-extern "C" fn remove_listener(handle: c_int) -> c_int {
-    if ts_server::plugins::remove_listener(handle) { OK } else { INVALID }
+goldsrc::stack_aligned! {
+    extern "C" fn remove_listener(handle: c_int) -> c_int {
+        if ts_server::plugins::remove_listener(handle) { OK } else { INVALID }
+    }
 }
 
-extern "C" fn private_size(entity: c_int) -> c_int {
-    api::private_size(entity)
+goldsrc::stack_aligned! {
+    extern "C" fn private_size(entity: c_int) -> c_int {
+        api::private_size(entity)
+    }
 }
 
 // ---- version 6: the frame's world ------------------------------------------------------------------
@@ -525,88 +609,108 @@ unsafe fn put_list<T: Copy>(list: &[T], out: *mut T, max: c_int) -> c_int {
     list.len().min(c_int::MAX as usize) as c_int
 }
 
-unsafe extern "C" fn players(out: *mut PlayerSnapshot, max: c_int) -> c_int {
-    // SAFETY: the table's contract for `out` and `max`.
-    unsafe { put_list(&api::frame::players(), out, max) }
-}
-
-unsafe extern "C" fn items(out: *mut ItemInfo, max: c_int) -> c_int {
-    // SAFETY: the table's contract for `out` and `max`.
-    unsafe { put_list(&api::frame::items(), out, max) }
-}
-
-unsafe extern "C" fn frame_info(out: *mut FrameInfo) -> c_int {
-    if out.is_null() {
-        return INVALID;
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn players(out: *mut PlayerSnapshot, max: c_int) -> c_int {
+        // SAFETY: the table's contract for `out` and `max`.
+        unsafe { put_list(&api::frame::players(), out, max) }
     }
-    let f = api::frame::frame_info();
-    // SAFETY: the caller passes a `FrameInfo` valid for writes (the table's contract).
-    unsafe { out.write_unaligned(f) };
-    OK
 }
 
-unsafe extern "C" fn entity_key(entity: c_int, key: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(key) = (unsafe { arg(key) }) else { return INVALID };
-    match api::keys::entity_key(entity, key) {
-        // SAFETY: the table's contract for the buffer. The value's bytes go out as they came
-        // (a map's keys aren't UTF-8 necessarily).
-        Ok(v) => unsafe { put_bytes(buf, len, v.as_bytes()) },
-        Err(code) => code,
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn items(out: *mut ItemInfo, max: c_int) -> c_int {
+        // SAFETY: the table's contract for `out` and `max`.
+        unsafe { put_list(&api::frame::items(), out, max) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn frame_info(out: *mut FrameInfo) -> c_int {
+        if out.is_null() {
+            return INVALID;
+        }
+        let f = api::frame::frame_info();
+        // SAFETY: the caller passes a `FrameInfo` valid for writes (the table's contract).
+        unsafe { out.write_unaligned(f) };
+        OK
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn entity_key(entity: c_int, key: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(key) = (unsafe { arg(key) }) else { return INVALID };
+        match api::keys::entity_key(entity, key) {
+            // SAFETY: the table's contract for the buffer. The value's bytes go out as they came
+            // (a map's keys aren't UTF-8 necessarily).
+            Ok(v) => unsafe { put_bytes(buf, len, v.as_bytes()) },
+            Err(code) => code,
+        }
     }
 }
 
 // ---- version 7: plugin identities ------------------------------------------------------------------
 
-/// Guard: NULL and a name that isn't UTF-8 are `INVALID` (a valid name is ASCII).
-unsafe extern "C" fn attach_plugin(name: *const c_char) -> PluginId {
-    // SAFETY: the table's contract for string arguments.
-    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
-    ts_server::plugins::attach_plugin(name)
+goldsrc::stack_aligned! {
+    /// Guard: NULL and a name that isn't UTF-8 are `INVALID` (a valid name is ASCII).
+    unsafe extern "C" fn attach_plugin(name: *const c_char) -> PluginId {
+        // SAFETY: the table's contract for string arguments.
+        let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+        ts_server::plugins::attach_plugin(name)
+    }
 }
 
-extern "C" fn detach_plugin(plugin: PluginId) -> c_int {
-    if ts_server::plugins::detach_plugin(plugin) { OK } else { INVALID }
+goldsrc::stack_aligned! {
+    extern "C" fn detach_plugin(plugin: PluginId) -> c_int {
+        if ts_server::plugins::detach_plugin(plugin) { OK } else { INVALID }
+    }
 }
 
 // ---- version 8: client extensions, the port client's version --------------------------------------
 
-unsafe extern "C" fn ext_message(player: c_int, channel: *const c_char, data: *const u8, len: c_int, flags: c_int) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(channel) = (unsafe { arg(channel) }) else { return INVALID };
-    let payload: &[u8] = match (data.is_null(), len) {
-        (_, 0) => &[],
-        (false, n) if n > 0 => {
-            // SAFETY: the table's contract: a non-NULL `data` is readable for `len` bytes.
-            unsafe { std::slice::from_raw_parts(data, n as usize) }
-        }
-        _ => return INVALID,
-    };
-    api::ext::ext_message(player, channel.to_bytes(), payload, flags)
-}
-
-unsafe extern "C" fn client_port_version(player: c_int, buf: *mut c_char, len: c_int) -> c_int {
-    match api::ext::client_port_version(player) {
-        // SAFETY: the table's contract for the buffer.
-        Ok(v) => unsafe { put_str(buf, len, &v) },
-        Err(code) => code,
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn ext_message(player: c_int, channel: *const c_char, data: *const u8, len: c_int, flags: c_int) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(channel) = (unsafe { arg(channel) }) else { return INVALID };
+        let payload: &[u8] = match (data.is_null(), len) {
+            (_, 0) => &[],
+            (false, n) if n > 0 => {
+                // SAFETY: the table's contract: a non-NULL `data` is readable for `len` bytes.
+                unsafe { std::slice::from_raw_parts(data, n as usize) }
+            }
+            _ => return INVALID,
+        };
+        api::ext::ext_message(player, channel.to_bytes(), payload, flags)
     }
 }
 
-/// Guard: an `id` that isn't UTF-8 counts as no offer (`INVALID`): offer ids are ASCII.
-unsafe extern "C" fn offer_client_plugin(player: c_int, id: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let id = unsafe { arg(id) }.map(|i| i.to_str().unwrap_or(""));
-    api::client_plugins::offer_client_plugin(player, id)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn client_port_version(player: c_int, buf: *mut c_char, len: c_int) -> c_int {
+        match api::ext::client_port_version(player) {
+            // SAFETY: the table's contract for the buffer.
+            Ok(v) => unsafe { put_str(buf, len, &v) },
+            Err(code) => code,
+        }
+    }
 }
 
-/// Guard: an `id` that isn't UTF-8 names no plugin the client listed (its `tspkg` came as text).
-unsafe extern "C" fn client_plugin_version(player: c_int, id: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let id = unsafe { arg(id) }.map(|i| i.to_str().unwrap_or(""));
-    match api::client_plugins::client_plugin_version(player, id) {
-        // SAFETY: the table's contract for the buffer.
-        Ok(v) => unsafe { put_str(buf, len, &v) },
-        Err(code) => code,
+goldsrc::stack_aligned! {
+    /// Guard: an `id` that isn't UTF-8 counts as no offer (`INVALID`): offer ids are ASCII.
+    unsafe extern "C" fn offer_client_plugin(player: c_int, id: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let id = unsafe { arg(id) }.map(|i| i.to_str().unwrap_or(""));
+        api::client_plugins::offer_client_plugin(player, id)
+    }
+}
+
+goldsrc::stack_aligned! {
+    /// Guard: an `id` that isn't UTF-8 names no plugin the client listed (its `tspkg` came as text).
+    unsafe extern "C" fn client_plugin_version(player: c_int, id: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let id = unsafe { arg(id) }.map(|i| i.to_str().unwrap_or(""));
+        match api::client_plugins::client_plugin_version(player, id) {
+            // SAFETY: the table's contract for the buffer.
+            Ok(v) => unsafe { put_str(buf, len, &v) },
+            Err(code) => code,
+        }
     }
 }

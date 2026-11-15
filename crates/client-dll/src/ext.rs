@@ -340,233 +340,301 @@ unsafe fn vec3(p: *const f32) -> Option<[f32; 3]> {
     (!p.is_null()).then(|| unsafe { p.cast::<[f32; 3]>().read_unaligned() })
 }
 
-unsafe extern "C" fn print(id: ExtId, msg: *const c_char) {
-    // SAFETY: the table's contract for string arguments.
-    if let Some(m) = unsafe { arg(msg) } {
-        ext::host_print(id, m.to_bytes());
-    }
-}
-
-unsafe extern "C" fn add_command(id: ExtId, name: *const c_char, f: CommandFn) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
-    ext::host_add_command(id, name, f)
-}
-
-extern "C" fn cmd_argc() -> c_int {
-    engine().cmd_argc()
-}
-
-extern "C" fn cmd_argv(i: c_int) -> *const c_char {
-    // The engine's string, valid until the next command runs (the table's contract: copy it).
-    engine().cmd_argv(i).as_ptr()
-}
-
-unsafe extern "C" fn register_cvar(id: ExtId, name: *const c_char, value: *const c_char, flags: c_int) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let (Some(name), value) = (unsafe { arg(name) }, unsafe { arg(value) }) else { return INVALID };
-    let Ok(name) = name.to_str() else { return INVALID };
-    let value = value.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
-    ext::host_register_cvar(id, name, &value, flags)
-}
-
-unsafe extern "C" fn cvar_value(name: *const c_char) -> f32 {
-    // SAFETY: the table's contract for string arguments.
-    unsafe { arg(name) }.map_or(0.0, |n| Cvar::lookup(n).value())
-}
-
-unsafe extern "C" fn cvar_string(name: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let s = unsafe { arg(name) }.and_then(|n| Cvar::lookup(n).string()).map(|s| s.to_bytes().to_vec()).unwrap_or_default();
-    // SAFETY: the table's contract for buffers.
-    unsafe { put_bytes(buf, len, &s) }
-}
-
-unsafe extern "C" fn set_cvar_value(name: *const c_char, value: f32) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    match unsafe { arg(name) } {
-        Some(n) => ext::host_set_cvar(n, value),
-        None => INVALID,
-    }
-}
-
-unsafe extern "C" fn client_cmd(id: ExtId, cmd: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    match unsafe { arg(cmd) } {
-        Some(c) => ext::host_cmd(id, &c.to_string_lossy(), false),
-        None => INVALID,
-    }
-}
-
-unsafe extern "C" fn server_cmd(id: ExtId, cmd: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    match unsafe { arg(cmd) } {
-        Some(c) => ext::host_cmd(id, &c.to_string_lossy(), true),
-        None => INVALID,
-    }
-}
-
-unsafe extern "C" fn screen_size(width: *mut c_int, height: *mut c_int) {
-    let s = ts_client::hud::screen();
-    // SAFETY: the table's contract for out-pointers (NULL ones are skipped).
-    unsafe {
-        put(width, s.width);
-        put(height, s.height);
-    }
-}
-
-unsafe extern "C" fn mouse_position(x: *mut c_int, y: *mut c_int) {
-    let (mx, my) = ext::host_mouse_position();
-    // SAFETY: the table's contract for out-pointers (NULL ones are skipped).
-    unsafe {
-        put(x, mx);
-        put(y, my);
-    }
-}
-
-unsafe extern "C" fn gl_proc(name: *const c_char) -> *mut c_void {
-    // SAFETY: the table's contract for string arguments.
-    unsafe { arg(name) }.map_or(std::ptr::null_mut(), goldsrc::ext::gl::proc_address)
-}
-
-extern "C" fn renderer_kind() -> c_int {
-    match goldsrc::ext::gl::renderer() {
-        goldsrc::ext::gl::Renderer::Software => renderer::SOFTWARE,
-        goldsrc::ext::gl::Renderer::Gl => renderer::GL,
-        goldsrc::ext::gl::Renderer::Gles => renderer::GLES,
-    }
-}
-
-unsafe extern "C" fn game_dir(buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for buffers.
-    unsafe { put_bytes(buf, len, engine().game_directory().as_bytes()) }
-}
-
-unsafe extern "C" fn port_version(buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for buffers.
-    unsafe { put_bytes(buf, len, shared::protocol::port::VERSION.as_bytes()) }
-}
-
-unsafe extern "C" fn server_address(buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for buffers.
-    unsafe { put_bytes(buf, len, ext::host_server_address().as_bytes()) }
-}
-
-unsafe extern "C" fn data_dir(id: ExtId, buf: *mut c_char, len: c_int) -> c_int {
-    match ext::host_data_dir(id) {
-        // SAFETY: the table's contract for buffers.
-        Ok(d) => unsafe { put_bytes(buf, len, d.as_bytes()) },
-        Err(e) => e,
-    }
-}
-
-unsafe extern "C" fn verified_spawn(id: ExtId, path: *const c_char, argc: c_int, argv: *const *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    let Some(path) = (unsafe { arg(path) }) else { return INVALID };
-    let mut args = Vec::new();
-    if argc > 0 && !argv.is_null() {
-        for i in 0..argc as usize {
-            // SAFETY: `argv` holds `argc` string pointers (the table's contract), each NULL or
-            // NUL-terminated.
-            let a = unsafe { arg(*argv.add(i)) };
-            args.push(a.map(|a| a.to_string_lossy().into_owned()).unwrap_or_default());
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn print(id: ExtId, msg: *const c_char) {
+        // SAFETY: the table's contract for string arguments.
+        if let Some(m) = unsafe { arg(msg) } {
+            ext::host_print(id, m.to_bytes());
         }
     }
-    ext::host_verified_spawn(id, &path.to_string_lossy(), &args)
 }
 
-unsafe extern "C" fn local_state(out: *mut LocalState) -> c_int {
-    // SAFETY: the table's contract for out-pointers.
-    unsafe { put_result(out, view::local_state()) }
-}
-
-unsafe extern "C" fn player(slot: c_int, out: *mut PlayerScore) -> c_int {
-    // SAFETY: the table's contract for out-pointers.
-    unsafe { put_result(out, view::player_score(slot)) }
-}
-
-unsafe extern "C" fn scores(out: *mut PlayerScore, max: c_int) -> c_int {
-    // SAFETY: the table's contract for lists.
-    unsafe { put_list(out, max, &view::scores()) }
-}
-
-unsafe extern "C" fn aim(out: *mut AimInfo) -> c_int {
-    // SAFETY: the table's contract for out-pointers.
-    unsafe { put_result(out, view::aim()) }
-}
-
-unsafe extern "C" fn trace_line(start: *const f32, end: *const f32, out: *mut TraceInfo) -> c_int {
-    // SAFETY: the table's contract for vectors.
-    let (Some(s), Some(e)) = (unsafe { vec3(start) }, unsafe { vec3(end) }) else { return INVALID };
-    // SAFETY: the table's contract for out-pointers.
-    unsafe { put_result(out, view::trace_line(s, e)) }
-}
-
-unsafe extern "C" fn visible_players(out: *mut VisiblePlayer, max: c_int) -> c_int {
-    // SAFETY: the table's contract for lists.
-    unsafe { put_list(out, max, &ext::host_visible_players()) }
-}
-
-unsafe extern "C" fn view_info(out: *mut ViewInfo) -> c_int {
-    // SAFETY: the table's contract for out-pointers.
-    unsafe { put(out, view::view()) }
-}
-
-unsafe extern "C" fn world_to_screen(point: *const f32, out: *mut f32) -> c_int {
-    // SAFETY: the table's contract for vectors.
-    let Some(p) = (unsafe { vec3(point) }) else { return INVALID };
-    match view::world_to_screen(p) {
-        // SAFETY: the table's contract: `out` is writable for two floats.
-        Ok(xy) => unsafe { put(out.cast::<[f32; 2]>(), xy) },
-        Err(e) => e,
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn add_command(id: ExtId, name: *const c_char, f: CommandFn) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+        ext::host_add_command(id, name, f)
     }
 }
 
-unsafe extern "C" fn weapon_name(id: c_int, buf: *mut c_char, len: c_int) -> c_int {
-    // SAFETY: the table's contract for buffers.
-    unsafe { put_bytes(buf, len, view::weapon_name(id).as_bytes()) }
+goldsrc::stack_aligned! {
+    extern "C" fn cmd_argc() -> c_int {
+        engine().cmd_argc()
+    }
 }
 
-extern "C" fn max_clients() -> c_int {
-    engine().max_clients()
+goldsrc::stack_aligned! {
+    extern "C" fn cmd_argv(i: c_int) -> *const c_char {
+        // The engine's string, valid until the next command runs (the table's contract: copy it).
+        engine().cmd_argv(i).as_ptr()
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn register_cvar(id: ExtId, name: *const c_char, value: *const c_char, flags: c_int) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let (Some(name), value) = (unsafe { arg(name) }, unsafe { arg(value) }) else { return INVALID };
+        let Ok(name) = name.to_str() else { return INVALID };
+        let value = value.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
+        ext::host_register_cvar(id, name, &value, flags)
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn cvar_value(name: *const c_char) -> f32 {
+        // SAFETY: the table's contract for string arguments.
+        unsafe { arg(name) }.map_or(0.0, |n| Cvar::lookup(n).value())
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn cvar_string(name: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let s = unsafe { arg(name) }.and_then(|n| Cvar::lookup(n).string()).map(|s| s.to_bytes().to_vec()).unwrap_or_default();
+        // SAFETY: the table's contract for buffers.
+        unsafe { put_bytes(buf, len, &s) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn set_cvar_value(name: *const c_char, value: f32) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        match unsafe { arg(name) } {
+            Some(n) => ext::host_set_cvar(n, value),
+            None => INVALID,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn client_cmd(id: ExtId, cmd: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        match unsafe { arg(cmd) } {
+            Some(c) => ext::host_cmd(id, &c.to_string_lossy(), false),
+            None => INVALID,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn server_cmd(id: ExtId, cmd: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        match unsafe { arg(cmd) } {
+            Some(c) => ext::host_cmd(id, &c.to_string_lossy(), true),
+            None => INVALID,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn screen_size(width: *mut c_int, height: *mut c_int) {
+        let s = ts_client::hud::screen();
+        // SAFETY: the table's contract for out-pointers (NULL ones are skipped).
+        unsafe {
+            put(width, s.width);
+            put(height, s.height);
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn mouse_position(x: *mut c_int, y: *mut c_int) {
+        let (mx, my) = ext::host_mouse_position();
+        // SAFETY: the table's contract for out-pointers (NULL ones are skipped).
+        unsafe {
+            put(x, mx);
+            put(y, my);
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn gl_proc(name: *const c_char) -> *mut c_void {
+        // SAFETY: the table's contract for string arguments.
+        unsafe { arg(name) }.map_or(std::ptr::null_mut(), goldsrc::ext::gl::proc_address)
+    }
+}
+
+goldsrc::stack_aligned! {
+    extern "C" fn renderer_kind() -> c_int {
+        match goldsrc::ext::gl::renderer() {
+            goldsrc::ext::gl::Renderer::Software => renderer::SOFTWARE,
+            goldsrc::ext::gl::Renderer::Gl => renderer::GL,
+            goldsrc::ext::gl::Renderer::Gles => renderer::GLES,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn game_dir(buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for buffers.
+        unsafe { put_bytes(buf, len, engine().game_directory().as_bytes()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn port_version(buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for buffers.
+        unsafe { put_bytes(buf, len, shared::protocol::port::VERSION.as_bytes()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn server_address(buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for buffers.
+        unsafe { put_bytes(buf, len, ext::host_server_address().as_bytes()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn data_dir(id: ExtId, buf: *mut c_char, len: c_int) -> c_int {
+        match ext::host_data_dir(id) {
+            // SAFETY: the table's contract for buffers.
+            Ok(d) => unsafe { put_bytes(buf, len, d.as_bytes()) },
+            Err(e) => e,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn verified_spawn(id: ExtId, path: *const c_char, argc: c_int, argv: *const *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        let Some(path) = (unsafe { arg(path) }) else { return INVALID };
+        let mut args = Vec::new();
+        if argc > 0 && !argv.is_null() {
+            for i in 0..argc as usize {
+                // SAFETY: `argv` holds `argc` string pointers (the table's contract), each NULL or
+                // NUL-terminated.
+                let a = unsafe { arg(*argv.add(i)) };
+                args.push(a.map(|a| a.to_string_lossy().into_owned()).unwrap_or_default());
+            }
+        }
+        ext::host_verified_spawn(id, &path.to_string_lossy(), &args)
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn local_state(out: *mut LocalState) -> c_int {
+        // SAFETY: the table's contract for out-pointers.
+        unsafe { put_result(out, view::local_state()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn player(slot: c_int, out: *mut PlayerScore) -> c_int {
+        // SAFETY: the table's contract for out-pointers.
+        unsafe { put_result(out, view::player_score(slot)) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn scores(out: *mut PlayerScore, max: c_int) -> c_int {
+        // SAFETY: the table's contract for lists.
+        unsafe { put_list(out, max, &view::scores()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn aim(out: *mut AimInfo) -> c_int {
+        // SAFETY: the table's contract for out-pointers.
+        unsafe { put_result(out, view::aim()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn trace_line(start: *const f32, end: *const f32, out: *mut TraceInfo) -> c_int {
+        // SAFETY: the table's contract for vectors.
+        let (Some(s), Some(e)) = (unsafe { vec3(start) }, unsafe { vec3(end) }) else { return INVALID };
+        // SAFETY: the table's contract for out-pointers.
+        unsafe { put_result(out, view::trace_line(s, e)) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn visible_players(out: *mut VisiblePlayer, max: c_int) -> c_int {
+        // SAFETY: the table's contract for lists.
+        unsafe { put_list(out, max, &ext::host_visible_players()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn view_info(out: *mut ViewInfo) -> c_int {
+        // SAFETY: the table's contract for out-pointers.
+        unsafe { put(out, view::view()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn world_to_screen(point: *const f32, out: *mut f32) -> c_int {
+        // SAFETY: the table's contract for vectors.
+        let Some(p) = (unsafe { vec3(point) }) else { return INVALID };
+        match view::world_to_screen(p) {
+            // SAFETY: the table's contract: `out` is writable for two floats.
+            Ok(xy) => unsafe { put(out.cast::<[f32; 2]>(), xy) },
+            Err(e) => e,
+        }
+    }
+}
+
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn weapon_name(id: c_int, buf: *mut c_char, len: c_int) -> c_int {
+        // SAFETY: the table's contract for buffers.
+        unsafe { put_bytes(buf, len, view::weapon_name(id).as_bytes()) }
+    }
+}
+
+goldsrc::stack_aligned! {
+    extern "C" fn max_clients() -> c_int {
+        engine().max_clients()
+    }
 }
 
 // ---- minor 1 ------------------------------------------------------------------------------------
 
-unsafe extern "C" fn claim_channel(id: ExtId, name: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments.
-    match unsafe { arg(name) } {
-        Some(n) => ext::host_claim_channel(id, n.to_bytes()),
-        None => INVALID,
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn claim_channel(id: ExtId, name: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments.
+        match unsafe { arg(name) } {
+            Some(n) => ext::host_claim_channel(id, n.to_bytes()),
+            None => INVALID,
+        }
     }
 }
 
-unsafe extern "C" fn release(id: ExtId, token: u32, verdict: c_int, data: *const u8, len: c_int) -> c_int {
-    let data = match (data.is_null(), len) {
-        (_, 0) => Some(&[][..]),
-        (false, n) if n > 0 => {
-            // SAFETY: the table's contract: a non-NULL `data` is readable for `len` bytes.
-            Some(unsafe { std::slice::from_raw_parts(data, n as usize) })
-        }
-        (true, _) => None,
-        _ => return INVALID,
-    };
-    ext::host_release(id, token, verdict, data)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn release(id: ExtId, token: u32, verdict_code: c_int, data: *const u8, len: c_int) -> c_int {
+        let data = match (data.is_null(), len) {
+            (_, 0) => Some(&[][..]),
+            (false, n) if n > 0 => {
+                // SAFETY: the table's contract: a non-NULL `data` is readable for `len` bytes.
+                Some(unsafe { std::slice::from_raw_parts(data, n as usize) })
+            }
+            (true, _) => None,
+            _ => return INVALID,
+        };
+        ext::host_release(id, token, verdict_code, data)
+    }
 }
 
 // ---- minor 2 ------------------------------------------------------------------------------------
 
-unsafe extern "C" fn hud_set_hidden(id: ExtId, mask: u64) -> c_int {
-    ext::host_hud_set_hidden(id, mask)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn hud_set_hidden(id: ExtId, mask: u64) -> c_int {
+        ext::host_hud_set_hidden(id, mask)
+    }
 }
 
-unsafe extern "C" fn hud_elements(out: *mut HudElement, max: c_int) -> c_int {
-    // SAFETY: the table's contract for lists.
-    unsafe { put_list(out, max, &ext::host_hud_elements()) }
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn hud_elements(out: *mut HudElement, max: c_int) -> c_int {
+        // SAFETY: the table's contract for lists.
+        unsafe { put_list(out, max, &ext::host_hud_elements()) }
+    }
 }
 
-unsafe extern "C" fn menu_reply(id: ExtId, kind: c_int, choice: *const c_char) -> c_int {
-    // SAFETY: the table's contract for string arguments; NULL is "" (close it).
-    let choice = unsafe { arg(choice) }.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
-    ext::host_menu_reply(id, kind, &choice)
+goldsrc::stack_aligned! {
+    unsafe extern "C" fn menu_reply(id: ExtId, kind: c_int, choice: *const c_char) -> c_int {
+        // SAFETY: the table's contract for string arguments; NULL is "" (close it).
+        let choice = unsafe { arg(choice) }.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+        ext::host_menu_reply(id, kind, &choice)
+    }
 }

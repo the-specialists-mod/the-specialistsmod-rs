@@ -357,6 +357,24 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
   release profile) does instead of aborting; `cargo test` keeps the checks (`profile.test`).
   Division by zero and `i32::MIN / -1` still panic in every profile, so divisors from data are
   guarded.
+* **Stack alignment on i686 Linux** (issue #199, `goldsrc::stack_align`). Rust's
+  `i686-unknown-linux-gnu` target assumes 16-byte stack alignment at function entry (SSE spills
+  use `movaps`/`movdqa`), but the i386 System V ABI only guarantees 4 bytes, and old metamod
+  plugins (AMX Mod X 1.8.2) call into the game library with `esp` = 8 mod 16, crashing the
+  first spill. Every `extern "C"` entry point the engine or a plugin can reach (the
+  `DLL_FUNCTIONS`/`NEW_DLL_FUNCTIONS` callbacks, `GiveFnptrsToDll`, `GetEntityAPI*`,
+  `GetNewDLLFunctions`, `CreateInterface`, `Server_GetBlendingInterface`, the entity class
+  exports, the plugin API table functions, the delta encoder and blending callbacks, and the
+  client library's exports and extension API) is wrapped with `goldsrc::stack_aligned!` or the
+  equivalent `export_entity_class!` trampoline. On i686 Linux each wrapper is a
+  `#[unsafe(naked)]` function that saves `ebp`, aligns `esp` to 16 bytes, copies 48 bytes of
+  arguments to the aligned frame, calls the real implementation, and restores the frame. On
+  every other target (`i686-pc-windows-gnu` already assumes 4-byte alignment, and x86_64 is
+  always 16-byte aligned) the macros are identity: the function is emitted unchanged with zero
+  overhead. The entity class exports use a `const _: () = { ... }` block with
+  `_stack_align_trampoline_entity!` to avoid module-name collisions with existing submodules
+  (`soundent`, `shrapnel`). Windows i686 is unaffected because its ABI guarantees only 4-byte
+  alignment and rustc's codegen for that target does not assume more.
 
 ## 9. Validation
 
