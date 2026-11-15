@@ -1,8 +1,7 @@
 //! What a gameplay ruleset can change in the server's stunt code (`CTSStunt`): the values
 //! ([`StuntRules`], `ServerRules::stunts`), how the stunt timers keep time ([`StuntClock`],
-//! `ServerRules::stunt_clock`) and the slot limits (`ServerRules::can_dive`). The
-//! [`StuntClock`] defaults are TS 3.0's (decomp `server/decomp/CTSStunt.c`); the 3.0 plugin
-//! holds its stunt values and slot limits.
+//! `ServerRules::stunt_clock`) and the slot limits (`ServerRules::can_dive`). The 3.0 plugin
+//! holds its stunt values, slot limits and clock (`ts30_server::stunt::Relative`).
 
 use super::StuntState;
 
@@ -136,91 +135,112 @@ pub struct StuntRules {
 /// lock (`block_timer`). The stunt code only stores what [`start`](Self::start) returns and asks
 /// [`running`](Self::running) / [`done`](Self::done), so a ruleset can keep them in another form.
 ///
-/// TS 3.0's (the default bodies) holds the seconds left of the player's own time: they count down by
-/// `slowmul * frametime` each frame (`CTSStunt::Play` 0x9a014), rest at 0.001 (the recovery,
-/// `BlockPlayer`) or 0, and count as over below 0.01.
+/// TS 3.0's (`ts30_server::stunt::Relative`) holds the seconds left of the player's own time:
+/// they count down by `slowmul * frametime` each frame (`CTSStunt::Play` 0x9a014), rest at
+/// 0.001 (the recovery, `BlockPlayer`) or 0, and count as over below 0.01. TS 2.1's
+/// (`ts21_server::stunt::Absolute`) holds end times.
 pub trait StuntClock: Sync {
     /// The value to store for a timer of `secs` seconds of the player's time, started at `now`
     /// while the player's time scale (`pev->fuser1`, 1 = normal) is `time_scale`.
-    fn start(&self, now: f32, time_scale: f32, secs: f64) -> f32 {
-        let _ = (now, time_scale);
-        secs as f32
-    }
+    fn start(&self, now: f32, time_scale: f32, secs: f64) -> f32;
 
     /// The timer `t` is still running (stunts wait for it).
-    fn running(&self, now: f32, t: f32) -> bool {
-        let _ = now;
-        t > 0.0
-    }
+    fn running(&self, now: f32, t: f32) -> bool;
 
     /// The timer `t` has run out: the recovery and the locks end, a wall landing may stunt again.
-    fn done(&self, now: f32, t: f32) -> bool {
-        let _ = now;
-        t < 0.01
-    }
+    fn done(&self, now: f32, t: f32) -> bool;
 
     /// `CTSStunt::Play`'s countdown, `dt` being the frame in the player's time.
-    fn tick(&self, s: &mut StuntState, dt: f32) {
-        if s.recover != 0.0 {
-            s.recover = (s.recover - dt).max(0.001);
-        }
-        s.next_stunt = (s.next_stunt - dt).max(0.0);
-        s.close_attack_cd = (s.close_attack_cd - dt).max(0.0);
-        s.prone_lock = (s.prone_lock - dt).max(0.0);
-    }
+    fn tick(&self, s: &mut StuntState, dt: f32);
 
     /// Port addition (plugin API version 6, `CombatState`): the game time at which timer `t`
-    /// runs out, 0 when it isn't running. TS 3.0's holds the seconds left (over below 0.01), so
-    /// `now + t`; a slowed player's runs out later than that.
-    fn ends_at(&self, now: f32, t: f32) -> f32 {
-        if self.done(now, t) { 0.0 } else { now + t }
-    }
+    /// runs out, 0 when it isn't running.
+    fn ends_at(&self, now: f32, t: f32) -> f32;
 
     /// `PreThink`'s countdown of `BlockPlayer`'s lock (`dt` is ×1.5 under double firerate).
-    fn tick_block(&self, s: &mut StuntState, dt: f32) {
-        if s.block_timer != 0.0 {
-            s.block_timer = (s.block_timer - dt).max(0.001);
-        }
-    }
+    fn tick_block(&self, s: &mut StuntState, dt: f32);
 
-    /// `NextStunt`'s byte for the cooldown `t`: tenths of a second, `(int)(t * 10)` (truncated).
-    fn next_stunt_byte(&self, now: f32, t: f32) -> u8 {
-        let _ = now;
-        shared::protocol::stunt::encode_next_stunt(t)
-    }
+    /// `NextStunt`'s byte for the cooldown `t`: tenths of a second.
+    fn next_stunt_byte(&self, now: f32, t: f32) -> u8;
 
     /// `GoWallJump` (0x9a7d4) / `GoWallClimb` (0x9aa1c): the cooldown after a wall stunt with
     /// the chain at `sum`, as the build's x87 holds it (`GoWallJump` under `Msvc` doesn't reload
-    /// the stored `float`), and `stored`, the chain as stored (`m_flWallChain`). 3.0's is
-    /// `max(0.5, sum)` stored as a `float` (rounding after the `max` is the same as before it).
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
-        let _ = (now, time_scale, stored);
-        sum.max(0.5) as f32
-    }
+    /// the stored `float`), and `stored`, the chain as stored (`m_flWallChain`).
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32;
 
     /// `HandleStunt` / `GoWheel`: the "coyote time" an air stunt is still allowed after leaving
     /// the ground at `last_ground`: 0.7 s of the player's time. `slow_mul` is `GiveSlowMul`
     /// (`stunt::slow_mul`: the time scale, at least 0.01, through the plugin hook), called only
-    /// by a ruleset that reads it. TS 3.0's: [`coyote_allows`] in the server's arithmetic.
-    fn air_stunt_allowed(&self, now: f32, time_scale: f32, slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
-        let _ = time_scale;
-        coyote_allows(crate::rules::cvars::pm_arith(), now, slow_mul(), last_ground)
-    }
+    /// by a ruleset that reads it.
+    fn air_stunt_allowed(&self, now: f32, time_scale: f32, slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool;
 
     /// A weapon delay (`m_flNextAttack`, a relative timer of the gun) a stunt sets, of `secs`
     /// seconds of the player's time: the gun counts it down in the player's time.
-    fn attack_delay(&self, time_scale: f32, secs: f64) -> f32 {
-        let _ = time_scale;
-        secs as f32
-    }
+    fn attack_delay(&self, time_scale: f32, secs: f64) -> f32;
 
     // Audit round 2: C
 
     /// `BlockPlayer(t)`'s lock (`StuntState::block_timer`) for the `t` a ruleset's weapon passed
-    /// (`GunHost::block_player`), at `now` with the time scale `time_scale`. 3.0's is
-    /// [`start`](Self::start)'s timer of `t` seconds of the player's time.
-    fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
-        self.start(now, time_scale, f64::from(t))
+    /// (`GunHost::block_player`), at `now` with the time scale `time_scale`.
+    fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32;
+}
+
+/// A test helper: TS 3.0's relative countdown clock, for core tests that need a [`StuntClock`]
+/// without depending on the 3.0 plugin (which depends on this crate).
+#[cfg(test)]
+pub(crate) mod countdown {
+    use super::*;
+
+    pub struct Countdown;
+
+    impl StuntClock for Countdown {
+        fn start(&self, now: f32, time_scale: f32, secs: f64) -> f32 {
+            let _ = (now, time_scale);
+            secs as f32
+        }
+        fn running(&self, now: f32, t: f32) -> bool {
+            let _ = now;
+            t > 0.0
+        }
+        fn done(&self, now: f32, t: f32) -> bool {
+            let _ = now;
+            t < 0.01
+        }
+        fn tick(&self, s: &mut StuntState, dt: f32) {
+            if s.recover != 0.0 {
+                s.recover = (s.recover - dt).max(0.001);
+            }
+            s.next_stunt = (s.next_stunt - dt).max(0.0);
+            s.close_attack_cd = (s.close_attack_cd - dt).max(0.0);
+            s.prone_lock = (s.prone_lock - dt).max(0.0);
+        }
+        fn ends_at(&self, now: f32, t: f32) -> f32 {
+            if self.done(now, t) { 0.0 } else { now + t }
+        }
+        fn tick_block(&self, s: &mut StuntState, dt: f32) {
+            if s.block_timer != 0.0 {
+                s.block_timer = (s.block_timer - dt).max(0.001);
+            }
+        }
+        fn next_stunt_byte(&self, now: f32, t: f32) -> u8 {
+            let _ = now;
+            shared::protocol::stunt::encode_next_stunt(t)
+        }
+        fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
+            let _ = (now, time_scale, stored);
+            sum.max(0.5) as f32
+        }
+        fn air_stunt_allowed(&self, now: f32, time_scale: f32, slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
+            let _ = time_scale;
+            coyote_allows(crate::rules::cvars::pm_arith(), now, slow_mul(), last_ground)
+        }
+        fn attack_delay(&self, time_scale: f32, secs: f64) -> f32 {
+            let _ = time_scale;
+            secs as f32
+        }
+        fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
+            self.start(now, time_scale, f64::from(t))
+        }
     }
 }
 

@@ -14,12 +14,15 @@ every one, TS 3.0 in `crates/ts30` (issue #200) and TS 2.1 in `crates/ts21`. Cod
 use stays in the core as a public helper; the 3.0-only code behind a hook lives in the 3.0
 plugin.
 
-Not every 3.0 rule is behind a hook yet: some paths run TS 3.0's code for every ruleset where
-2.1 is the same or not yet ported (client commands after `client_command` declines, parts of
-`lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`), and the
-core still holds the
-branches for 2.1's round modes (`Mode::RoundTdm`, `Mode::Objective`). Moving those behind hooks is
-issue #200's phase 2.
+Issue #200's phase 2 is complete. The items the audit listed -- client commands after
+`client_command` declines, `lifecycle::{killed, on_spawn, start_observer, death_think}`,
+`teams::change_team`, the `Mode::RoundTdm`/`Mode::Objective` branches, and the `StuntClock`
+default bodies -- are all behind hooks or were found to be shared (identical in 2.1): the
+differing client commands are intercepted by the 2.1 plugin's `client_command` hook, the
+lifecycle and team-change functions are already hooked with the shared parts as pub helpers, the
+round-mode branches in the core are neutral mode tests both rulesets share (the mode-specific
+rules live in each plugin's `think` and `install`), and the `StuntClock` trait's default bodies
+(TS 3.0's relative countdown) moved to `ts30_server::stunt::Relative`.
 
 The C plugin API ([plugin-api.md](plugin-api.md), for AMX Mod X) is a different thing. It is a
 narrow table of player setters, and it can't reach movement, prediction or the HUD.

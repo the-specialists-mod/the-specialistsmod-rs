@@ -938,9 +938,7 @@ mod tests {
     /// Plugin API version 6: `CombatState`'s end times from TS 3.0's countdowns.
     #[test]
     fn countdown_timers_end_after_the_seconds_left() {
-        use super::super::rules::StuntClock;
-        struct Countdown;
-        impl StuntClock for Countdown {}
+        use super::super::rules::{StuntClock, countdown::Countdown};
         assert_eq!(Countdown.ends_at(100.0, 0.5), 100.5);
         assert_eq!(Countdown.ends_at(100.0, 0.001), 0.0, "a resting recovery is over");
         assert_eq!(Countdown.ends_at(100.0, 0.0), 0.0);
@@ -948,10 +946,7 @@ mod tests {
 
     #[test]
     fn jump_kick_gate() {
-        use super::super::rules::StuntClock;
-        /// The trait's countdown (the 3.0 plugin's clock).
-        struct Countdown;
-        impl StuntClock for Countdown {}
+        use super::super::rules::{StuntClock, countdown::Countdown};
         let clock = &Countdown;
         let ok = |recover: f32, cd: f32, iuser4, flags, gun, weapon| {
             close_attack_allowed(clock.running(0.0, recover), clock.running(0.0, cd), iuser4, flags, gun, weapon)

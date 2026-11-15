@@ -4,7 +4,8 @@
 use goldsrc::sys::{IN_DUCK, IN_JUMP};
 use shared::ts::stunt::{DEAD_LOCK, FREEZE_ANGLES, GO_DUCK, RECOVER, ROLLING};
 use ts_server::player::Player;
-use ts_server::stunt::rules::{Dive, FirePose2, StuntClock, StuntRules};
+use ts_server::stunt::StuntState;
+use ts_server::stunt::rules::{Dive, FirePose2, StuntClock, StuntRules, coyote_allows};
 
 /// `CanDiveHigh/Medium/Low` (0x9a494...): used slots (`81 - TSSpace`) must be below 42/52/62
 /// ("40 for high, 50 for medium, 60 for low"); The One (pl+0x7b9, `Player::ts.is_the_one`, set
@@ -56,10 +57,78 @@ pub const STUNTS: StuntRules = StuntRules {
     breakables_ieee_xyz: false,
 };
 
-/// TS 3.0's [`StuntClock`].
+/// TS 3.0's [`StuntClock`]: relative countdowns of the player's own time, counted down each
+/// frame by `slowmul * frametime` (`CTSStunt::Play` 0x9a014). The recovery and `BlockPlayer`'s
+/// lock rest at 0.001; every timer counts as over below 0.01.
 pub struct Relative;
 
-impl StuntClock for Relative {}
+impl StuntClock for Relative {
+    /// `secs` seconds of the player's time: stored as a `float` countdown.
+    fn start(&self, now: f32, time_scale: f32, secs: f64) -> f32 {
+        let _ = (now, time_scale);
+        secs as f32
+    }
+
+    fn running(&self, now: f32, t: f32) -> bool {
+        let _ = now;
+        t > 0.0
+    }
+
+    fn done(&self, now: f32, t: f32) -> bool {
+        let _ = now;
+        t < 0.01
+    }
+
+    /// `CTSStunt::Play`'s countdown: each timer ticks down by `dt` (the frame in the player's
+    /// time) and rests at its floor.
+    fn tick(&self, s: &mut StuntState, dt: f32) {
+        if s.recover != 0.0 {
+            s.recover = (s.recover - dt).max(0.001);
+        }
+        s.next_stunt = (s.next_stunt - dt).max(0.0);
+        s.close_attack_cd = (s.close_attack_cd - dt).max(0.0);
+        s.prone_lock = (s.prone_lock - dt).max(0.0);
+    }
+
+    /// `now + t`: the seconds left plus the current time, 0 when over.
+    fn ends_at(&self, now: f32, t: f32) -> f32 {
+        if self.done(now, t) { 0.0 } else { now + t }
+    }
+
+    fn tick_block(&self, s: &mut StuntState, dt: f32) {
+        if s.block_timer != 0.0 {
+            s.block_timer = (s.block_timer - dt).max(0.001);
+        }
+    }
+
+    /// `(int)(t * 10)` (truncated).
+    fn next_stunt_byte(&self, now: f32, t: f32) -> u8 {
+        let _ = now;
+        shared::protocol::stunt::encode_next_stunt(t)
+    }
+
+    /// `max(0.5, sum)` stored as a `float`.
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
+        let _ = (now, time_scale, stored);
+        sum.max(0.5) as f32
+    }
+
+    /// [`coyote_allows`] in the server's arithmetic.
+    fn air_stunt_allowed(&self, now: f32, time_scale: f32, slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
+        let _ = time_scale;
+        coyote_allows(ts_server::rules::cvars::pm_arith(), now, slow_mul(), last_ground)
+    }
+
+    fn attack_delay(&self, time_scale: f32, secs: f64) -> f32 {
+        let _ = time_scale;
+        secs as f32
+    }
+
+    /// [`start`](Self::start)'s timer of `t` seconds of the player's time.
+    fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
+        self.start(now, time_scale, f64::from(t))
+    }
+}
 
 pub static RELATIVE: Relative = Relative;
 
