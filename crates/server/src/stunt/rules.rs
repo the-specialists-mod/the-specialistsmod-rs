@@ -1,7 +1,7 @@
 //! What a gameplay ruleset can change in the server's stunt code (`CTSStunt`): the values
 //! ([`StuntRules`], `ServerRules::stunts`), how the stunt timers keep time ([`StuntClock`],
-//! `ServerRules::stunt_clock`) and the slot limits (`ServerRules::can_dive`). The 3.0 plugin
-//! holds its stunt values, slot limits and clock (`ts30_server::stunt::Relative`).
+//! `ServerRules::stunt_clock`) and the slot limits (`ServerRules::can_dive`). Each ruleset's
+//! plugin holds its stunt values, slot limits and clock implementation.
 
 use super::StuntState;
 
@@ -135,10 +135,10 @@ pub struct StuntRules {
 /// lock (`block_timer`). The stunt code only stores what [`start`](Self::start) returns and asks
 /// [`running`](Self::running) / [`done`](Self::done), so a ruleset can keep them in another form.
 ///
-/// TS 3.0's (`ts30_server::stunt::Relative`) holds the seconds left of the player's own time:
+/// TS 3.0's plugin holds the seconds left of the player's own time (a relative countdown):
 /// they count down by `slowmul * frametime` each frame (`CTSStunt::Play` 0x9a014), rest at
-/// 0.001 (the recovery, `BlockPlayer`) or 0, and count as over below 0.01. TS 2.1's
-/// (`ts21_server::stunt::Absolute`) holds end times.
+/// 0.001 (the recovery, `BlockPlayer`) or 0, and count as over below 0.01. TS 2.1's plugin
+/// holds absolute end times.
 pub trait StuntClock: Sync {
     /// The value to store for a timer of `secs` seconds of the player's time, started at `now`
     /// while the player's time scale (`pev->fuser1`, 1 = normal) is `time_scale`.
