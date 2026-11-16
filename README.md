@@ -62,7 +62,9 @@ the port replaces only the game libraries) and one of these engines:
 * Steam Half-Life (25th anniversary) on Linux or Windows, or Steam HLDS for a dedicated server.
 * ReHLDS (Linux or Windows).
 
-**To build:**
+**To build:** Docker is enough. `docker/run.sh cargo xtask build` (or `dist --release`) builds in
+an image with the pinned toolchain, MinGW and the FWGS headers (`docker/Dockerfile`). To build
+on the host instead:
 
 * Rust stable (edition 2024, so 1.85 or newer) with the four targets:
   `rustup target add i686-unknown-linux-gnu x86_64-unknown-linux-gnu i686-pc-windows-gnu x86_64-pc-windows-gnu`.

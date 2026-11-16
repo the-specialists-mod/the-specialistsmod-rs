@@ -61,6 +61,7 @@ crates/
                  crate but its own names a ruleset outside test code
                  (docs/implementation/gameplay-plugins.md)
 xtask/           build, package, install and test tooling (`cargo xtask ...`)
+docker/          the build image (Dockerfile) and run.sh, which runs a command in it
 game/ts/         liblist.gam, gameinfo.txt, delta.lst, the icons (game.tga, ts_logo_big.tga)
 ```
 
@@ -102,8 +103,36 @@ provably sound, because the engine shares and mutates it, so respect the borrow 
 
 ## Build and test
 
-Requirements: Rust stable, `clang` (bindgen), MinGW-w64 for the Windows targets, Wine for the
-Windows engine roots, and `../xash3d-fwgs` (or set `FWGS_DIR`).
+**Build in Docker.** `docker/Dockerfile` is the build environment: the pinned Rust toolchain
+(1.99.1: a newer rustfmt and clippy reject the tree, and an older clippy has other lints) with
+rustfmt, clippy and the four targets, `clang`/libclang, MinGW-w64, `gcc-multilib`, and the FWGS
+headers at the commit `release.yml` pins (`FWGS_DIR=/opt/xash3d-fwgs`). `docker/run.sh <command>`
+runs a command in it, building the image first whenever the Dockerfile changed (the first build
+takes a few minutes). It mounts the checkout at its host path, so `target/` and `dist/` are the
+same as a host build's, runs as your user, and keeps the cargo registry in the `tsrs-cargo-home`
+volume. Run every build, format and lint command through it, so results don't depend on the
+host's toolchain:
+
+```sh
+docker/run.sh cargo fmt                   # also: cargo fmt --check
+docker/run.sh cargo test
+docker/run.sh cargo xtask build [--release]
+docker/run.sh cargo xtask lint
+docker/run.sh cargo xtask dist --release  # or --release-debug
+```
+
+Keep `RUST_VERSION` and `FWGS_COMMIT` in the Dockerfile in step with what the tree and
+`.github/workflows/release.yml` need. A toolchain bump goes with the fmt and clippy fixes it
+brings.
+
+The in-engine commands (`install`, `test`, `play`, `all`, `plugins`, `client-plugins`, `steam`,
+...) run on the host, not in the container: they start engines from `~/games`, Wine, Steam and
+X displays. They build the libraries themselves, so the host also needs Rust (use the Dockerfile's
+version: `rustup override set 1.99.1` in the checkout), `clang`, MinGW-w64, `gcc-multilib`,
+Wine for the Windows engine roots, and `../xash3d-fwgs` (or set `FWGS_DIR`). Their build shares
+`target/` with the container's.
+
+The full command list (prefix the build-only ones with `docker/run.sh`):
 
 ```sh
 cargo test                                # unit tests (all crates)
@@ -178,7 +207,7 @@ Engine roots (`cargo xtask roots`) default to `~/games/<dir>`: `fwgs` (native am
 `fwgs-win` (FWGS 0.21 win32 under Wine), `fwgs-win64` (FWGS win32-amd64 under Wine), `rehlds-linux`, `rehlds-win`, `hlds25-linux` and
 `hlds25-win`. Setup steps are in `docs/validation.md` §1.
 
-Before calling a change done:
+Before calling a change done (the first four in Docker, `docker/run.sh ...`):
 - `cargo fmt` is applied (`rustfmt.toml`: 140 columns, `use_small_heuristics = "Max"`), so
   `cargo fmt --check` is clean.
 - `cargo test` passes.
