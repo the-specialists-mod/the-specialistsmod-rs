@@ -49,6 +49,13 @@ fn index(e: *mut edict_t) -> c_int {
     if e.is_null() { -1 } else { engine().index_of(e) }
 }
 
+/// `DamageEvent::taken` (#327): the health actually lost. A killing blow leaves the health below
+/// zero (1000 damage on 100 health leaves -900), but the victim can't lose more than it had, so
+/// the health after counts as 0: overkill isn't health lost.
+fn health_taken(health_prev: f32, health_after: f32, refused: bool) -> f32 {
+    if refused { 0.0 } else { (health_prev - health_after.max(0.0)).max(0.0) }
+}
+
 /// Player `e`'s `TakeDamage(dmg)` ran: the `Plugin::damage` event, with the version 8 extras
 /// from `take_damage` (#327, #328).
 pub fn damage(e: *mut edict_t, dmg: &DamageInfo, extra: &TakeDamageExtra) {
@@ -59,7 +66,7 @@ pub fn damage(e: *mut edict_t, dmg: &DamageInfo, extra: &TakeDamageExtra) {
     };
     let v = e.v();
     // #327: health actually lost and whether the damage was refused.
-    let taken = if extra.refused { 0.0 } else { (extra.health_prev - v.health).max(0.0) };
+    let taken = health_taken(extra.health_prev, v.health, extra.refused);
     // #327: per-hitgroup pellet counts and damage flags from the multi-damage.
     // Only for `ApplyMultiDamage`'s damage: direct damage has none.
     let (pellets, mut flags) = if crate::damage::multi::applying() {
@@ -123,5 +130,14 @@ mod tests {
         let mut own = direct;
         (own.hitgroup, own.dir) = (6, [0.0, 1.0, 0.0]);
         assert_eq!(pick_hit(a, &own, 5.0, trace).0, 6, "damage that carries its own hit");
+    }
+
+    #[test]
+    fn health_taken_excludes_overkill() {
+        assert_eq!(health_taken(100.0, 70.0, false), 30.0);
+        assert_eq!(health_taken(100.0, -900.0, false), 100.0, "a 1000-damage kill takes the 100 health there was");
+        assert_eq!(health_taken(40.0, 0.0, false), 40.0);
+        assert_eq!(health_taken(100.0, 100.0, true), 0.0, "refused");
+        assert_eq!(health_taken(50.0, 60.0, false), 0.0, "health rose: nothing lost");
     }
 }

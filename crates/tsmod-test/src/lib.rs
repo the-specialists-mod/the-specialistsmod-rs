@@ -1137,9 +1137,17 @@ unsafe extern "C" fn damage(event: *const DamageEvent) {
     let d = unsafe { *event };
     if with(|s| s.kill.is_some_and(|k| k.victim == d.victim && k.killer == d.attacker)) == Some(true) && d.damage == 1000.0 {
         check("damage", d.inflictor == d.attacker && d.health <= 0.0 && d.weapon >= -1);
-        // #327: a killing blow (1000 damage on a 100-health player) must report the health taken
-        // and not be refused; no kevlar on the test bots.
-        check("damage_taken", d.taken > 0.0 && d.taken <= 100.0);
+        say(
+            log::INFO,
+            &format!(
+                "kill damage: health {} armor {} taken {} armor_absorbed {} refused {}",
+                d.health, d.armor, d.taken, d.armor_absorbed, d.refused
+            ),
+        );
+        // #327: a killing blow (1000 damage) must report the health the victim had, not the
+        // overkill, and not be refused. That is up to 150: TS's kill bonus raises a killer's
+        // health to at most 150, and a bot may have scored a kill before the scripted one.
+        check("damage_taken", d.taken > 0.0 && d.taken <= 150.0);
         check("damage_refused", d.refused == 0);
     }
     if ours(d.victim) && d.hitgroup > 0 {

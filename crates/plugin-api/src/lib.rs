@@ -384,8 +384,9 @@ pub struct DamageEvent {
     pub pos: [f32; 3],
 
     // ---- version 8 (#327): what TakeDamage did ---------------------------------------------------
-    /// Health actually lost: the victim's health before minus its health after, 0 when the damage
-    /// was refused or dealt no health (god mode, dead victim, team check).
+    /// Health actually lost: the victim's health before minus its health after (floored at 0, so
+    /// a killing blow reports at most the health the victim had, not the overkill), 0 when the
+    /// damage was refused or dealt no health (god mode, dead victim, team check).
     pub taken: f32,
     /// The damage kevlar absorbed: the asked damage minus the post-kevlar damage that reached
     /// the health. 0 when kevlar didn't apply (head, legs, no armour, a non-bullet type, or a

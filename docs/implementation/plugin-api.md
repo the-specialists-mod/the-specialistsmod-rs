@@ -444,7 +444,8 @@ block's size and layout don't matter to them.
   `WaterMove` 0xd905c, `CheckTimeBasedDamage` 0xda00c, `ChangePlayerTeam` 0xe48e2), so ham hooks
   fire and a `Ham_TakeDamage` hook that supersedes one of them prevents the damage; the earlier
   port passed them directly to `CBasePlayer::TakeDamage`'s body and skipped the hooks.
-* Version 8 (#327): `DamageEvent` adds `taken` (health lost), `armor_absorbed`, `refused`, `pellets`
+* Version 8 (#327): `DamageEvent` adds `taken` (health lost, at most the health the victim had: a
+  killing blow's overkill isn't counted), `armor_absorbed`, `refused`, `pellets`
   (per-hitgroup pellet counts) and `flags` (stunting, dodging, headshot). `pellets` comes from the
   multi-damage's `TraceAttack`s (one entry per pellet that added to it); `flags` accumulates the
   stunt/dodge state of every `TraceAttack` and `glast_headshot`. Direct damage (falls, drowning,
